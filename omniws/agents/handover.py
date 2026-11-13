@@ -46,3 +46,17 @@ def build_prompt(earlier: Iterable[Message], user_text: str) -> str:
     return ("<earlier_conversation>\nThese turns happened in this app before you joined, possibly with other models "
             "or agents. Treat them as the conversation so far; tool steps are summaries.\n\n"
             f"{joined}\n</earlier_conversation>\n\n{user_text}")
+
+
+def turn_items(earlier: Iterable[Message]) -> list[dict[str, str]]:
+    """Earlier turns as {"role", "text"}, for agents that accept conversation items (Codex)."""
+    items = []
+    for message in earlier:
+        if message.status == "streaming":
+            continue
+        text = describe(message)
+        if message.role == "user":
+            text = text.removeprefix("[user]\n")
+        if text.strip() and text.strip() not in ("[user]", "[assistant]"):
+            items.append({"role": "user" if message.role == "user" else "assistant", "text": text})
+    return items

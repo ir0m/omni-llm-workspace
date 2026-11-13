@@ -48,8 +48,11 @@ class Turn:
     mode: str                       # chat | code
     cwd: Path                       # the project folder (code) or an empty folder (chat)
     model: str                      # the agent's own model id
-    prompt: str                     # turns the agent hasn't seen + the user's message
+    text: str                       # the user's message
+    prompt: str                     # turns the agent hasn't seen + the user's message (as text)
     fresh_prompt: str               # the whole conversation + the user's message, for a new agent session
+    unseen: list[dict[str, str]]    # turns the agent hasn't seen, as {"role", "text"} (for agents that take items)
+    earlier: list[dict[str, str]]   # every earlier turn, as {"role", "text"}
     native_session: str | None      # the agent's session to continue, if any
     temporary: bool                 # leave no session or memory behind
     effort: str | None

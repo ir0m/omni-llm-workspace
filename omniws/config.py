@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     omni_approval_default: Literal["ask", "auto_edit", "auto"] = "auto_edit"
     omni_approval_max: Literal["ask", "auto_edit", "auto"] = "auto"
     omni_allow_shell: bool = True
+    # Network access from the agents' sandboxes (package installs, git pull)
+    omni_allow_network: bool = True
     omni_shell_deny: str = "sudo,su,rm -rf /,rm -rf ~,mkfs,shutdown,reboot,git push --force,git push -f"
 
     @field_validator("omni_data_dir", "omni_projects_dir", mode="before")

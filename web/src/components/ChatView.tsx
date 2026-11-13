@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUp, Menu, Square, Timer } from 'lucide-react'
 import {
-  api, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
+  api, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
   type PermissionAsk, type ProjectList, type Target, type Usage,
 } from '../api'
 import { applyUpdate, mergeUsage } from '../blocks'
@@ -11,6 +11,7 @@ import ExecutorPicker, { firstTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
 import PlanBar from './PlanBar'
 import ProjectPicker from './ProjectPicker'
+import UsageMeter from './UsageMeter'
 
 const LAST_TARGET = 'omni.lastTarget'
 const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
@@ -41,6 +42,7 @@ type Props = {
   onOpenMenu: () => void
   onSelect: (id: string | null) => void
   onChanged: () => void
+  onRunFinished: () => void
   onError: (error: unknown) => void
 }
 
@@ -70,6 +72,8 @@ export default function ChatView(props: Props) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [followup, setFollowup] = useState<string | null>(null)
+  // "Continue with another executor" after a usage limit: the message to send again and where to
+  const [retry, setRetry] = useState<{ text: string; target: Target | null } | null>(null)
   const source = useRef<EventSource | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -117,6 +121,7 @@ export default function ChatView(props: Props) {
         if (conversationId) load(conversationId).finally(() => setLive(null)).catch(onError)
         else setLive(null)
         onChanged()
+        props.onRunFinished()  // usage windows move after every turn
       }
       events.addEventListener('status', (event) => {
         const status = JSON.parse((event as MessageEvent).data).status
@@ -129,6 +134,7 @@ export default function ChatView(props: Props) {
         if (events.readyState === EventSource.CLOSED) finish()  // the run is gone; show what was saved
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [conversationId, load, onChanged, onError],
   )
 
@@ -243,6 +249,13 @@ export default function ChatView(props: Props) {
     }
   }
 
+  function retryElsewhere(replyIndex: number) {
+    const question = messages.slice(0, replyIndex).findLast((message) => message.role === 'user')
+    if (!question) return
+    const others = executors.filter((item) => item.id !== target?.provider && usable(item, mode))
+    setRetry({ text: textOf(question), target: others.length ? { provider: others[0].id, model: others[0].models[0].id, effort: null } : null })
+  }
+
   async function fork(messageId: string) {
     if (!conversationId) return
     try {
@@ -343,13 +356,14 @@ export default function ChatView(props: Props) {
               )}
             </div>
           )}
-          {messages.map((message) => (
+          {messages.map((message, index) => (
             <MessageView
               key={message.id}
               message={message}
               providers={executors}
               streaming={live && live.messageId === message.id ? live : undefined}
               onFork={() => fork(message.id)}
+              onRetryElsewhere={index === messages.length - 1 && !live ? () => retryElsewhere(index) : undefined}
             />
           ))}
         </div>
@@ -365,6 +379,31 @@ export default function ChatView(props: Props) {
             project={project}
             onAnswer={(outcome, reason) => answer(ask, outcome, reason)}
           />
+        )}
+        {retry && (
+          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm">
+            <span className="shrink-0">別の実行元で送り直す:</span>
+            <ExecutorPicker
+              executors={executors.filter((item) => item.id !== target?.provider)}
+              mode={mode}
+              target={retry.target}
+              onChange={(next) => setRetry({ ...retry, target: next })}
+              onRefresh={props.onRefreshExecutors}
+            />
+            <button
+              disabled={!retry.target}
+              onClick={() => {
+                if (!retry.target) return
+                chooseTarget(retry.target)
+                setFollowup(retry.text)
+                setRetry(null)
+              }}
+              className="rounded-lg bg-accent px-3 py-1 font-medium text-accent-fg disabled:opacity-40"
+            >
+              送る
+            </button>
+            <button onClick={() => setRetry(null)} className="text-muted">やめる</button>
+          </div>
         )}
         {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
@@ -398,6 +437,7 @@ export default function ChatView(props: Props) {
             </button>
           )}
         </div>
+        <UsageMeter executor={executor} />
       </div>
     </main>
   )

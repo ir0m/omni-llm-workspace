@@ -4,6 +4,7 @@ import time
 
 from fastapi import APIRouter, Request
 
+from ..agents.jsonrpc import RpcError
 from ..agents.opencode import FREE, PROVIDER_IDS
 from ..providers.base import ProviderError
 
@@ -33,7 +34,27 @@ async def list_executors(request: Request, refresh: bool = False):
         overview.append({"id": FREE, "label": "OpenCode 無料モデル", "kind": "api", "configured": True,
                          "setting": "OMNI_ALLOW_OPENCODE_FREE", "error": cache.get("error"), "modes": ["code"],
                          "code_via": None, "note": "外部サービス", "models": cache.get("models", [])})
+    codex = state.agents.get("codex")
+    if codex and codex.installed():
+        overview.insert(0, await codex_entry(codex, refresh))
     return overview
+
+
+async def codex_entry(codex, refresh: bool) -> dict:
+    """Codex with the ChatGPT login: its plan, models and usage windows. Not configured until `codex login`."""
+    entry = {"id": "codex", "label": "Codex", "kind": "subscription", "configured": False, "setting": "codex login",
+             "error": None, "modes": ["chat", "code"], "code_via": None, "models": [], "usage": None}
+    try:
+        await codex.refresh_account(force=refresh)
+        if codex.account:
+            plan = codex.account.get("planType")
+            entry.update(configured=True, label=f"Codex（{str(plan).capitalize()}）" if plan else "Codex",
+                         models=[model.to_dict() for model in await codex.list_models()], usage=codex.usage())
+    except ProviderError as exc:
+        entry["error"] = exc.to_dict()
+    except (RpcError, OSError) as exc:
+        entry["error"] = {"code": "unknown", "message": str(exc)[:200]}
+    return entry
 
 
 @router.get("/api/config")

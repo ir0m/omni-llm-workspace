@@ -113,11 +113,12 @@ function pieces(blocks: Block[], live: boolean): Piece[] {
   return out
 }
 
-export default function MessageView({ message, providers, streaming, onFork }: {
+export default function MessageView({ message, providers, streaming, onFork, onRetryElsewhere }: {
   message: Message
   providers: Executor[]
   streaming?: { blocks: Block[]; usage: Usage | null }
   onFork: () => void
+  onRetryElsewhere?: () => void
 }) {
   if (message.role === 'user') {
     return (
@@ -158,6 +159,11 @@ export default function MessageView({ message, providers, streaming, onFork }: {
         <p className="mt-2 rounded-lg border border-danger/40 px-3 py-2 text-sm text-danger">
           {errorText[message.error.code] ?? errorText.unknown}
           {message.error.message && <span className="block text-xs opacity-80">{message.error.message}</span>}
+          {message.error.code === 'rate_limit' && onRetryElsewhere && (
+            <button onClick={onRetryElsewhere} className="mt-2 rounded-lg border border-danger/40 px-3 py-1 text-xs font-medium hover:bg-danger/10">
+              別の実行元で続ける
+            </button>
+          )}
         </p>
       )}
       {STATUS_LABEL[message.status] && <p className="mt-2 text-xs text-warn">{STATUS_LABEL[message.status]}</p>}

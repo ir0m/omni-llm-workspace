@@ -102,6 +102,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         onOpenMenu={() => setDrawerOpen(true)}
         onSelect={select}
         onChanged={refresh}
+        onRunFinished={() => loadExecutors(false)}
         onError={handle}
       />
     </div>

@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import projects
 from ..agents import policy
 from ..agents.base import Agent, Turn
-from ..agents.handover import build_prompt
+from ..agents.handover import build_prompt, turn_items
 from ..agents.opencode import FREE, PROVIDER_IDS, OpenCodeAgent
 from ..db import now_ms
 from ..history import chat_history
@@ -23,6 +23,8 @@ from ..providers.base import ChatProvider, ChatRequest
 from ..runs import Run, RunManager
 
 TITLE_LENGTH = 40
+# Agents with their own login that take both Chat and Code turns
+SUBSCRIPTION_AGENTS = ("codex", "claude_code")
 router = APIRouter(prefix="/api/conversations")
 
 
@@ -216,13 +218,17 @@ async def send_message(conversation_id: str, body: Send, request: Request):
     provider: ChatProvider | None = None
     agent: Agent | None = None
     agent_model = body.model
-    if mode == "chat":
+    if mode == "code" and (not project or not projects.exists(settings.omni_projects_dir, project)):
+        raise HTTPException(status_code=400, detail="project_not_found")
+    if body.provider in SUBSCRIPTION_AGENTS and body.provider in state.agents:
+        agent = state.agents[body.provider]  # Codex, Claude Code: Chat and Code
+        if not agent.installed():
+            raise HTTPException(status_code=400, detail="agent_not_installed")
+    elif mode == "chat":
         provider = state.registry.get(body.provider)
         if provider is None:
             raise HTTPException(status_code=400, detail="provider_not_configured")
     else:
-        if not project or not projects.exists(settings.omni_projects_dir, project):
-            raise HTTPException(status_code=400, detail="project_not_found")
         opencode: OpenCodeAgent | None = state.agents.get("opencode")
         if opencode is None or not opencode.installed():
             raise HTTPException(status_code=400, detail="code_needs_agent")
@@ -263,7 +269,8 @@ async def send_message(conversation_id: str, body: Send, request: Request):
             native = record.native_id if record and not conversation.temporary else None
             unseen = [message for message in earlier if message.seq > record.synced_seq] if native else earlier
             prepared.update(native=native, count=len(unseen), prompt=build_prompt(unseen, body.text),
-                            fresh_prompt=build_prompt(earlier, body.text))
+                            fresh_prompt=build_prompt(earlier, body.text), unseen=turn_items(unseen),
+                            earlier=turn_items(earlier))
             return prepared
 
     prepared = await run_in_threadpool(prepare)
@@ -295,7 +302,11 @@ async def send_message(conversation_id: str, body: Send, request: Request):
         return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
 
     rules: list[dict[str, Any]] = prepared["rules"]
-    cwd = projects.project_path(settings.omni_projects_dir, project)
+    if mode == "code":
+        cwd = projects.project_path(settings.omni_projects_dir, project)
+    else:  # agents chat in an empty folder of their own
+        cwd = settings.omni_data_dir / "agent-chat"
+        cwd.mkdir(parents=True, exist_ok=True)
 
     def decide(permission):
         return policy.decide(permission, prepared["approval_mode"], rules, settings)
@@ -306,9 +317,10 @@ async def send_message(conversation_id: str, body: Send, request: Request):
     async def agent_stream(run: Run):
         if prepared["count"]:
             yield {"sessionUpdate": "handover", "agent": agent.label, "count": prepared["count"]}
-        turn = Turn(conversation_id=conversation_id, mode="code", cwd=cwd, model=agent_model, prompt=prepared["prompt"],
-                    fresh_prompt=prepared["fresh_prompt"], native_session=native_box["id"],
-                    temporary=prepared["temporary"], effort=body.effort, ask_permission=run.ask, on_session=on_session)
+        turn = Turn(conversation_id=conversation_id, mode=mode, cwd=cwd, model=agent_model, text=body.text,
+                    prompt=prepared["prompt"], fresh_prompt=prepared["fresh_prompt"], unseen=prepared["unseen"],
+                    earlier=prepared["earlier"], native_session=native_box["id"], temporary=prepared["temporary"],
+                    effort=body.effort, ask_permission=run.ask, on_session=on_session)
         async for update in agent.run(turn):
             yield update
 

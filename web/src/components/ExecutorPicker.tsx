@@ -1,5 +1,6 @@
 import { RefreshCw } from 'lucide-react'
 import type { Executor, Mode, Target } from '../api'
+import { usageLabel } from './UsageMeter'
 
 const KIND_ORDER = ['subscription', 'api', 'local'] as const
 const KIND_LABEL: Record<string, string> = { subscription: 'サブスク', api: 'API', local: 'ローカル' }
@@ -53,7 +54,7 @@ export default function ExecutorPicker({ executors, mode, target, onChange, onRe
                   : null
                 return (
                   <option key={item.id} value={item.id} disabled={reason !== null}>
-                    {item.label}{reason ? `（${reason}）` : ''}{item.note ? ` ${item.note}` : ''}
+                    {item.label}{reason ? `（${reason}）` : ''}{item.note ? ` ${item.note}` : ''}{reason ? '' : usageLabel(item)}
                   </option>
                 )
               })}

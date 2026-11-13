@@ -121,6 +121,12 @@ def normalize(update: dict[str, Any], cwd: Path) -> Update | None:
     return None  # commands, config options, replayed user messages, session info
 
 
+def session_update(message: dict[str, Any], cwd: Path) -> Update | None:
+    if message.get("method") != "session/update":
+        return None
+    return normalize((message.get("params") or {}).get("update") or {}, cwd)
+
+
 def permission_request(params: dict[str, Any], cwd: Path) -> PermissionRequest:
     call = params.get("toolCall") or {}
     raw = call.get("rawInput") or {}
@@ -305,14 +311,14 @@ class OpenCodeAgent:
                     if getter not in done:
                         getter.cancel()
                         break
-                    raw = getter.result()
-                    if raw is None:
+                    message = getter.result()
+                    if message is None:
                         break
-                    if (update := normalize(raw, turn.cwd)) is not None:
+                    if (update := session_update(message, turn.cwd)) is not None:
                         yield update
                 while not queue.empty():
-                    raw = queue.get_nowait()
-                    if raw and (update := normalize(raw, turn.cwd)) is not None:
+                    message = queue.get_nowait()
+                    if message and (update := session_update(message, turn.cwd)) is not None:
                         yield update
                 try:
                     result = await prompting

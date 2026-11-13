@@ -115,7 +115,11 @@ export type Executor = {
   code_via: string | null
   note?: string | null
   models: ModelInfo[]
+  usage?: SubscriptionUsage | null
 }
+
+export type UsageWindow = { label: string; usedPercent: number | null; resetsAt: number | null }
+export type SubscriptionUsage = { plan: string | null; windows: UsageWindow[] }
 
 export type Project = {
   name: string
