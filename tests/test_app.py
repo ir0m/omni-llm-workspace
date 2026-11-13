@@ -54,3 +54,43 @@ def test_web_app_is_served_with_fallback(tmp_path):
     assert client.get("/../secret.txt").text != "no"
     assert client.get("/%2e%2e/secret.txt").text != "no"
     assert client.get("/api/unknown").status_code == 404
+
+
+def test_built_spa_has_every_startup_api_and_declares_optional_features(tmp_path):
+    from .conftest import PASSWORD, make_settings
+    from omniws.providers.registry import Registry
+
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<div id=root></div>")
+    config = make_settings(tmp_path)
+    app = create_app(config, web_dist=web, agents={}, registry=Registry(config, {}))
+    with TestClient(app) as client:
+        assert client.post("/api/auth/login", json={"password": PASSWORD}).status_code == 200
+        for path in ("/api/auth/me", "/api/config", "/api/conversations", "/api/projects", "/api/executors"):
+            assert client.get(path).status_code == 200, path
+        capabilities = client.get("/api/config").json()["capabilities"]
+        assert {"native_sessions", "project_files"} <= set(capabilities)
+        assert client.post("/api/sessions/discover").status_code == 200
+        assert client.post("/api/projects", json={"name": "app", "git_init": False}).status_code == 201
+        for path in ("/api/projects/app/files", "/api/projects/app/changes"):
+            assert client.get(path).status_code == 200, path
+
+
+def test_config_reports_a_screen_rebuilt_after_the_server_started(tmp_path):
+    import os
+    from .conftest import PASSWORD, make_settings
+    from omniws.providers.registry import Registry
+
+    web = tmp_path / "web"
+    web.mkdir()
+    index = web / "index.html"
+    index.write_text("<div id=root></div>")
+    os.utime(index, (1, 1))
+    config = make_settings(tmp_path)
+    app = create_app(config, web_dist=web, agents={}, registry=Registry(config, {}))
+    with TestClient(app) as client:
+        assert client.post("/api/auth/login", json={"password": PASSWORD}).status_code == 200
+        assert client.get("/api/config").json()["restart_required"] is False
+        index.write_text("<div id=root></div><!-- new build -->")
+        assert client.get("/api/config").json()["restart_required"] is True

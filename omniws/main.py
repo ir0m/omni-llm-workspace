@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -74,6 +75,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app = FastAPI(title="OmniLLMWorkspace", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    app.state.started_at = time.time()
+    app.state.web_index = web_dist / "index.html"
     app.state.auth = Auth(settings)
     app.state.registry = registry or Registry(settings)
     app.state.agents = agents if agents is not None else {

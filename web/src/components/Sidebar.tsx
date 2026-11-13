@@ -62,6 +62,7 @@ type Props = {
   onChanged: () => void
   onRefresh: () => void
   refreshing: boolean
+  serverUpdateNeeded: boolean
   onError: (error: unknown) => void
   onSignOut: () => void
 }
@@ -129,6 +130,7 @@ export default function Sidebar(props: Props) {
           </button>
         </div>
         <nav className="flex-1 overflow-y-auto px-2 pb-2">
+          {props.serverUpdateNeeded && <p role="status" className="px-2 py-2 text-xs text-muted">新機能の反映待ちです。サーバーを再起動すると利用できます。</p>}
           {groups.map((group) => {
             const isCollapsed = !search && collapsed.has(group.key)
             return (

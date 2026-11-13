@@ -12,6 +12,14 @@ FREE_CACHE_SECONDS = 600
 router = APIRouter()
 
 
+def restart_required(state) -> bool:
+    """The screen was rebuilt after this server started, so it may call APIs this process doesn't have."""
+    try:
+        return state.web_index.stat().st_mtime > state.started_at
+    except (AttributeError, OSError):
+        return False
+
+
 @router.get("/api/executors")
 async def list_executors(request: Request, refresh: bool = False):
     """What can take a turn. Providers answer Chat directly; in Code, OpenCode runs their models.
@@ -88,8 +96,10 @@ async def codex_entry(codex, refresh: bool) -> dict:
 @router.get("/api/config")
 def config(request: Request):
     """The limits from .env that the screen needs."""
-    settings = request.app.state.settings
+    state = request.app.state
+    settings = state.settings
     return {"approval_default": settings.omni_approval_default, "approval_max": settings.omni_approval_max,
+            "capabilities": ["native_sessions", "project_files"], "restart_required": restart_required(state),
             "allow_shell": settings.omni_allow_shell, "shell_deny": settings.shell_deny(),
             "allow_opencode_free": settings.omni_allow_opencode_free,
             "allow_claude_subscription": settings.omni_allow_claude_subscription}

@@ -49,6 +49,8 @@ export type PermissionAsk = {
 }
 
 export type AppConfig = {
+  capabilities?: string[]
+  restart_required?: boolean
   approval_default: ApprovalMode
   approval_max: ApprovalMode
   allow_shell: boolean
@@ -156,11 +158,26 @@ export type FileDiff = { path: string; patch: string; truncated: boolean }
 
 export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null }
 
+const DETAIL_TEXT: Record<string, string> = {
+  conversation_not_found: 'この会話は見つかりません（削除された可能性があります）',
+  message_not_found: 'メッセージが見つかりません',
+  project_not_found: 'プロジェクトが見つかりません',
+  agent_not_installed: 'このエージェントはインストールされていません',
+  provider_not_configured: 'この実行元は設定されていません',
+  code_needs_agent: 'Code ではエージェントを選んでください',
+  reply_in_progress: '返答の途中です。終わってから送ってください',
+  run_not_found: 'この実行は終了しています',
+  request_not_found: 'この承認はすでに締め切られています',
+  not_signed_in: 'ログインしてください',
+}
+
 export class ApiError extends Error {
   status: number
   detail: string
   constructor(status: number, detail: string) {
-    super(detail)
+    // 405, or FastAPI's bare 404 for an unknown route: the screen is newer than the running server
+    const outdated = status === 405 || (status === 404 && detail === 'Not Found')
+    super(outdated ? 'サーバーがこの操作に対応していません。更新後はサーバーを再起動してください。' : DETAIL_TEXT[detail] ?? detail)
     this.status = status
     this.detail = detail
   }

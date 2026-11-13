@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer } from 'lucide-react'
 import {
-  api, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
+  api, ApiError, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
   type PermissionAsk, type ProjectList, type Target, type Usage,
 } from '../api'
 import { applyUpdate, mergeUsage } from '../blocks'
@@ -68,7 +68,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
 }
 
 export default function ChatView(props: Props) {
-  const { conversationId, executors, onError, onChanged, config } = props
+  const { conversationId, executors, onError, onChanged, onSelect, config } = props
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [target, setTarget] = useState<Target | null>(null)
@@ -154,9 +154,13 @@ export default function ChatView(props: Props) {
         const streaming = data.messages.findLast((message) => message.status === 'streaming')
         if (data.active_run && streaming) follow(data.active_run, streaming.id)
       })
-      .catch(onError)
+      .catch((caught) => {
+        // A link to a deleted conversation would fail again on every reload: leave it
+        if (caught instanceof ApiError && caught.status === 404) onSelect(null)
+        onError(caught)
+      })
     return () => source.current?.close()
-  }, [conversationId, load, follow, onError])
+  }, [conversationId, load, follow, onError, onSelect])
 
   // Start from the conversation's last choice, else the last choice in this mode, else the first usable one
   useEffect(() => {
@@ -353,7 +357,7 @@ export default function ChatView(props: Props) {
             </span>
           )}
           <div className={`ml-auto hidden min-w-0 items-center gap-2 ${panelOpen && mode === 'code' && project ? '' : '2xl:flex'}`}>{controls}</div>
-          {mode === 'code' && project && <button onClick={() => setPanelOpen((open) => !open)}
+          {mode === 'code' && project && config?.capabilities?.includes('project_files') && <button onClick={() => setPanelOpen((open) => !open)}
             aria-label="ファイル・差分を開く" title="ファイル・差分" aria-expanded={panelOpen}
             className={`ml-auto shrink-0 rounded-lg p-2 ${panelOpen ? 'bg-raised text-accent' : 'text-muted hover:text-fg 2xl:ml-0'}`}>
             <FolderOpen className="size-5" aria-hidden />
