@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy, GitBranch } from 'lucide-react'
-import { errorText, textOf, type Message, type Provider, type Usage } from '../api'
+import { errorText, textOf, type Message, type Executor, type Usage } from '../api'
 
 const STATUS_LABEL: Record<string, string> = { cancelled: '停止しました', interrupted: 'サーバーの再起動で中断しました' }
 
@@ -67,7 +67,7 @@ export function Markdown({ text }: { text: string }) {
 
 export default function MessageView({ message, providers, streaming, onFork }: {
   message: Message
-  providers: Provider[]
+  providers: Executor[]
   streaming?: { text: string; thought: string; usage: Usage | null }
   onFork: () => void
 }) {

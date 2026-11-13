@@ -104,12 +104,12 @@ class Registry:
                 continue
             listing = by_id.get(provider_id)
             overview.append({"id": provider_id, "label": label, "kind": kind, "configured": listing is not None,
-                             "setting": setting, "error": listing.error if listing else None,
-                             "models": [model.to_dict() for model in listing.models] if listing else []})
+                             "setting": setting, "error": listing.error if listing else None, "modes": ["chat"],
+                             "code_via": "opencode", "models": [model.to_dict() for model in listing.models] if listing else []})
         for provider_id in ids:  # providers added in tests or later
             if provider_id not in KNOWN:
                 provider, listing = self.providers[provider_id], by_id[provider_id]
                 overview.append({"id": provider_id, "label": provider.label, "kind": provider.kind, "configured": True,
-                                 "setting": None, "error": listing.error,
+                                 "setting": None, "error": listing.error, "modes": ["chat"], "code_via": "opencode",
                                  "models": [model.to_dict() for model in listing.models]})
         return overview

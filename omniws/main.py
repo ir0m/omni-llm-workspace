@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
-from .api import conversations, providers, runs
+from .api import conversations, executors, projects, runs
 from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
@@ -74,7 +74,7 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.include_router(health)
     app.include_router(auth_router)
     signed_in = [Depends(require_user)]
-    for router in (conversations.router, runs.router, providers.router):
+    for router in (conversations.router, runs.router, executors.router, projects.router):
         app.include_router(router, dependencies=signed_in)
     mount_web(app, web_dist)
     return app

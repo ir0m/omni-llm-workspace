@@ -100,8 +100,9 @@ def test_unknown_provider_and_run(client):
     assert client.get("/api/runs/nope/events").status_code == 404
 
 
-def test_provider_overview(client):
-    overview = {item["id"]: item for item in client.get("/api/providers").json()}
+def test_executor_overview(client):
+    overview = {item["id"]: item for item in client.get("/api/executors").json()}
     assert overview["anthropic"]["configured"] is False
     assert overview["anthropic"]["setting"] == "ANTHROPIC_API_KEY"
     assert overview["fake"]["models"][0]["id"] == "m1"
+    assert overview["fake"]["modes"] == ["chat"]

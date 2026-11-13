@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from .. import projects
 from ..db import now_ms
 from ..history import chat_history
 from ..models import Conversation, Message
@@ -41,6 +42,14 @@ def message_dict(message: Message) -> dict[str, Any]:
             "created_at": message.created_at}
 
 
+def check_project(request: Request, name: str | None) -> str | None:
+    if not name:
+        return None
+    if not projects.exists(request.app.state.settings.omni_projects_dir, name):
+        raise HTTPException(status_code=400, detail="project_not_found")
+    return name
+
+
 def find(session: Session, conversation_id: str) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
     if conversation is None:
@@ -51,6 +60,8 @@ def find(session: Session, conversation_id: str) -> Conversation:
 class NewConversation(BaseModel):
     title: str = Field(default="", max_length=200)
     temporary: bool = False
+    mode: Literal["chat", "code"] = "chat"
+    project: str | None = Field(default=None, max_length=100)
 
 
 class ConversationPatch(BaseModel):
@@ -58,6 +69,9 @@ class ConversationPatch(BaseModel):
     pinned: bool | None = None
     hidden: bool | None = None
     temporary: bool | None = None
+    mode: Literal["chat", "code"] | None = None
+    # A project name, or "" to take the conversation out of its project
+    project: str | None = Field(default=None, max_length=100)
 
 
 class Order(BaseModel):
@@ -89,8 +103,9 @@ def list_conversations(request: Request, include_hidden: bool = False, session: 
 @router.post("", status_code=201)
 def create_conversation(body: NewConversation, request: Request, session: Session = Depends(db)):
     now = now_ms()
+    project = check_project(request, body.project)
     conversation = Conversation(id=str(uuid.uuid4()), title=body.title.strip(), temporary=body.temporary,
-                                sort_key=float(now), created_at=now, updated_at=now)
+                                mode=body.mode, project=project, sort_key=float(now), created_at=now, updated_at=now)
     session.add(conversation)
     session.commit()
     return conversation_dict(conversation, request.app.state.runs)
@@ -119,7 +134,12 @@ def get_conversation(conversation_id: str, request: Request, session: Session = 
 def update_conversation(conversation_id: str, body: ConversationPatch, request: Request,
                         session: Session = Depends(db)):
     conversation = find(session, conversation_id)
-    for name, value in body.model_dump(exclude_none=True).items():
+    changes = body.model_dump(exclude_none=True)
+    if "project" in changes:
+        conversation.project = check_project(request, changes.pop("project"))
+        if conversation.project is None:
+            conversation.mode = "chat"
+    for name, value in changes.items():
         setattr(conversation, name, value.strip() if isinstance(value, str) else value)
     conversation.updated_at = now_ms()
     session.commit()
@@ -176,6 +196,8 @@ async def send_message(conversation_id: str, body: Send, request: Request):
     def prepare() -> tuple[dict, dict, list[dict[str, str]]]:
         with state.sessions.begin() as session:
             conversation = find(session, conversation_id)
+            if conversation.mode == "code":  # chat providers can't edit files; agents take Code turns
+                raise HTTPException(status_code=400, detail="code_needs_agent")
             seq = (conversation.messages[-1].seq if conversation.messages else 0) + 1
             now = now_ms()
             user = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq, role="user",

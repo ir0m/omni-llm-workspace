@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUp, Menu, Square, Timer } from 'lucide-react'
-import { api, type ConversationDetail, type Provider, type Target, type Usage } from '../api'
+import { api, type ConversationDetail, type Draft, type Executor, type Mode, type ProjectList, type Target, type Usage } from '../api'
+import ExecutorPicker, { firstTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
-import ModelPicker, { firstTarget } from './ModelPicker'
+import ProjectPicker from './ProjectPicker'
 
 const LAST_TARGET = 'omni.lastTarget'
 
 type Live = { runId: string; messageId: string; text: string; thought: string; usage: Usage | null }
 
-function savedTarget(): Target | null {
+function savedTarget(mode: Mode): Target | null {
   try {
-    return JSON.parse(localStorage.getItem(LAST_TARGET) ?? 'null')
+    return JSON.parse(localStorage.getItem(`${LAST_TARGET}.${mode}`) ?? 'null')
   } catch {
     return null
   }
@@ -20,18 +21,38 @@ const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: co
 
 type Props = {
   conversationId: string | null
-  newTemporary: boolean
-  onNewTemporaryChange: (value: boolean) => void
-  providers: Provider[]
-  onRefreshProviders: () => void
+  draft: Draft
+  onDraftChange: (draft: Draft) => void
+  executors: Executor[]
+  projects: ProjectList | null
+  onProjectsChanged: () => void
+  onRefreshExecutors: () => void
   onOpenMenu: () => void
   onSelect: (id: string | null) => void
   onChanged: () => void
   onError: (error: unknown) => void
 }
 
+function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
+  return (
+    <div className="flex shrink-0 rounded-lg border border-border p-0.5 text-sm" role="radiogroup" aria-label="モード">
+      {(['chat', 'code'] as const).map((item) => (
+        <button
+          key={item}
+          role="radio"
+          aria-checked={mode === item}
+          onClick={() => onChange(item)}
+          className={`rounded-md px-2.5 py-1 ${mode === item ? 'bg-accent text-accent-fg' : 'text-muted hover:text-fg'}`}
+        >
+          {item === 'chat' ? 'Chat' : 'Code'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function ChatView(props: Props) {
-  const { conversationId, providers, onError, onChanged } = props
+  const { conversationId, executors, onError, onChanged } = props
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [target, setTarget] = useState<Target | null>(null)
@@ -40,6 +61,10 @@ export default function ChatView(props: Props) {
   const source = useRef<EventSource | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+
+  const mode: Mode = detail ? detail.mode : props.draft.mode
+  const project = detail ? detail.project : props.draft.project
+  const temporary = detail ? detail.temporary : props.draft.temporary
 
   const load = useCallback(
     (id: string) =>
@@ -100,11 +125,12 @@ export default function ChatView(props: Props) {
     return () => source.current?.close()
   }, [conversationId, load, follow, onError])
 
+  // Start from the conversation's last choice, else the last choice in this mode, else the first usable one
   useEffect(() => {
     if (target) return
-    const initial = detail?.target ?? savedTarget() ?? firstTarget(providers)
+    const initial = detail?.target ?? savedTarget(mode) ?? firstTarget(executors, mode)
     if (initial) setTarget(initial)
-  }, [detail, providers, target])
+  }, [detail, executors, target, mode])
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -113,16 +139,41 @@ export default function ChatView(props: Props) {
 
   function chooseTarget(next: Target) {
     setTarget(next)
-    localStorage.setItem(LAST_TARGET, JSON.stringify(next))
+    localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next))
   }
+
+  async function change(patch: { mode?: Mode; project?: string }) {
+    if (!detail) {
+      props.onDraftChange({ ...props.draft, ...patch })
+      return
+    }
+    try {
+      setDetail({ ...detail, ...(await api.update(detail.id, patch)) })
+      onChanged()
+    } catch (error) {
+      onError(error)
+    }
+  }
+
+  function changeMode(next: Mode) {
+    if (next === mode) return
+    const current = executors.find((item) => item.id === target?.provider)
+    if (current && !usable(current, next)) setTarget(savedTarget(next) ?? firstTarget(executors, next))
+    change({ mode: next })
+  }
+
+  const executor = executors.find((item) => item.id === target?.provider)
+  const blocked = mode === 'code' && !project ? 'プロジェクトを選んでください'
+    : executor && !usable(executor, mode) ? (mode === 'code' ? 'Codeを動かせる実行元を選んでください（エージェントは次の段階で追加）' : 'この実行元は Chat で使えません')
+    : null
 
   async function send() {
     const text = input.trim()
-    if (!text || !target || sending || live) return
+    if (!text || !target || sending || live || blocked) return
     setSending(true)
     try {
       let id = conversationId
-      if (!id) id = (await api.create(props.newTemporary)).id
+      if (!id) id = (await api.create(props.draft)).id
       const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort })
       setInput('')
       stick.current = true
@@ -153,25 +204,43 @@ export default function ChatView(props: Props) {
     }
   }
 
-  const temporary = detail ? detail.temporary : props.newTemporary
   const messages = detail?.messages ?? []
-  const noModels = providers.length > 0 && !providers.some((provider) => provider.configured && provider.models.length)
+  const nothingUsable = executors.length > 0 && !executors.some((item) => usable(item, 'chat'))
+
+  const controls = (
+    <>
+      <ModeToggle mode={mode} onChange={changeMode} />
+      {mode === 'code' && (
+        <ProjectPicker
+          list={props.projects}
+          value={project}
+          onChange={(name) => change({ project: name, mode: 'code' })}
+          onCreated={(name) => {
+            props.onProjectsChanged()
+            change({ project: name, mode: 'code' })
+          }}
+        />
+      )}
+      <ExecutorPicker executors={executors} mode={mode} target={target} onChange={chooseTarget} onRefresh={props.onRefreshExecutors} />
+    </>
+  )
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <button onClick={props.onOpenMenu} className="rounded-lg p-1.5 text-muted md:hidden" aria-label="会話一覧">
-          <Menu className="size-5" aria-hidden />
-        </button>
-        <h1 className="hidden min-w-0 truncate text-sm font-medium sm:block">{detail?.title || '新しいチャット'}</h1>
-        {temporary && (
-          <span className="flex shrink-0 items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn" title="アプリには保存します。エージェント側には記録やメモリを残しません">
-            <Timer className="size-3" aria-hidden /> 一時
-          </span>
-        )}
-        <div className="ml-auto min-w-0">
-          <ModelPicker providers={providers} target={target} onChange={chooseTarget} onRefresh={props.onRefreshProviders} />
+      <header className="border-b border-border">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <button onClick={props.onOpenMenu} className="rounded-lg p-1.5 text-muted md:hidden" aria-label="会話一覧">
+            <Menu className="size-5" aria-hidden />
+          </button>
+          <h1 className="min-w-0 truncate text-sm font-medium">{detail?.title || (mode === 'code' ? '新しいCode' : '新しいチャット')}</h1>
+          {temporary && (
+            <span className="flex shrink-0 items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn" title="アプリには保存します。エージェント側には記録やメモリを残しません">
+              <Timer className="size-3" aria-hidden /> 一時
+            </span>
+          )}
+          <div className="ml-auto hidden min-w-0 items-center gap-2 lg:flex">{controls}</div>
         </div>
+        <div className="flex items-center gap-2 overflow-x-auto px-3 pb-2 lg:hidden">{controls}</div>
       </header>
 
       <div
@@ -185,15 +254,15 @@ export default function ChatView(props: Props) {
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
           {messages.length === 0 && (
             <div className="py-16 text-center text-muted">
-              {noModels ? (
+              {nothingUsable ? (
                 <p>使えるモデルがありません。.env に API キーかローカルLLMの URL を書いて再起動してください。</p>
               ) : (
                 <>
-                  <p className="text-lg text-fg">何でも聞いてください</p>
-                  <p className="mt-1 text-sm">モデルは送るたびに右上で変えられます。</p>
+                  <p className="text-lg text-fg">{mode === 'code' ? (project ? `${project} で何をしますか` : 'プロジェクトを選んでください') : '何でも聞いてください'}</p>
+                  <p className="mt-1 text-sm">実行元とモデルは送るたびに変えられます。</p>
                   {!conversationId && (
                     <label className="mt-4 inline-flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={props.newTemporary} onChange={(event) => props.onNewTemporaryChange(event.target.checked)} />
+                      <input type="checkbox" checked={props.draft.temporary} onChange={(event) => props.onDraftChange({ ...props.draft, temporary: event.target.checked })} />
                       一時チャットにする
                     </label>
                   )}
@@ -205,7 +274,7 @@ export default function ChatView(props: Props) {
             <MessageView
               key={message.id}
               message={message}
-              providers={providers}
+              providers={executors}
               streaming={live && live.messageId === message.id ? live : undefined}
               onFork={() => fork(message.id)}
             />
@@ -214,6 +283,7 @@ export default function ChatView(props: Props) {
       </div>
 
       <div className="border-t border-border bg-bg px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
           <textarea
             value={input}
@@ -226,7 +296,7 @@ export default function ChatView(props: Props) {
               }
             }}
             rows={Math.min(8, Math.max(1, input.split('\n').length))}
-            placeholder={target ? 'メッセージを入力' : 'モデルを選んでください'}
+            placeholder={target ? 'メッセージを入力' : '実行元とモデルを選んでください'}
             className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent px-2 py-1.5 outline-none"
           />
           {live ? (
@@ -236,7 +306,7 @@ export default function ChatView(props: Props) {
           ) : (
             <button
               onClick={send}
-              disabled={!input.trim() || !target || sending}
+              disabled={!input.trim() || !target || sending || blocked !== null}
               className="rounded-xl bg-accent p-2 text-accent-fg disabled:opacity-40"
               aria-label="送信"
               title="送信"

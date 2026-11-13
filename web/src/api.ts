@@ -28,10 +28,13 @@ export type Message = {
 
 export type Target = { provider: string; model: string; effort?: string | null }
 
+export type Mode = 'chat' | 'code'
+
 export type Conversation = {
   id: string
   title: string
-  mode: 'chat' | 'code'
+  mode: Mode
+  project: string | null
   temporary: boolean
   pinned: boolean
   hidden: boolean
@@ -54,15 +57,30 @@ export type ModelInfo = {
   efforts: string[]
 }
 
-export type Provider = {
+/** Something that can take a turn: a provider (API, local) or an agent (subscription CLIs, OpenCode). */
+export type Executor = {
   id: string
   label: string
   kind: 'api' | 'local' | 'subscription'
   configured: boolean
   setting: string | null
   error: ErrorInfo | null
+  modes: Mode[]
+  code_via: string | null
+  note?: string | null
   models: ModelInfo[]
 }
+
+export type Project = {
+  name: string
+  path: string
+  git: { branch: string | null; changes: number | null } | null
+  modified_at: number
+}
+
+export type ProjectList = { root: string; can_create: boolean; can_clone: boolean; projects: Project[] }
+
+export type Draft = { temporary: boolean; mode: Mode; project: string | null }
 
 export class ApiError extends Error {
   status: number
@@ -82,13 +100,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (!response.ok) {
-    let detail = response.statusText
+    let detail: unknown = response.statusText
     try {
       detail = (await response.json()).detail ?? detail
     } catch {
       /* not JSON */
     }
-    throw new ApiError(response.status, typeof detail === 'string' ? detail : JSON.stringify(detail))
+    const text = typeof detail === 'string' ? detail
+      : detail && typeof detail === 'object' && 'message' in detail ? String((detail as { message: unknown }).message || JSON.stringify(detail))
+      : JSON.stringify(detail)
+    throw new ApiError(response.status, text)
   }
   return response.json() as Promise<T>
 }
@@ -100,8 +121,8 @@ export const api = {
   conversations: (includeHidden: boolean) =>
     request<Conversation[]>('GET', `/api/conversations?include_hidden=${includeHidden}`),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
-  create: (temporary: boolean) => request<Conversation>('POST', '/api/conversations', { temporary }),
-  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary'>>) =>
+  create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
+  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode'>> & { project?: string }) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   remove: (id: string) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}`),
   fork: (id: string, messageId?: string) =>
@@ -111,7 +132,11 @@ export const api = {
     request<{ run_id: string; user_message: Message; assistant_message: Message }>(
       'POST', `/api/conversations/${id}/messages`, body),
   cancel: (runId: string) => request<{ cancelled: boolean }>('POST', `/api/runs/${runId}/cancel`),
-  providers: (refresh = false) => request<Provider[]>('GET', `/api/providers?refresh=${refresh}`),
+  executors: (refresh = false) => request<Executor[]>('GET', `/api/executors?refresh=${refresh}`),
+  projects: () => request<ProjectList>('GET', '/api/projects'),
+  createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
+    request<{ name: string }>('POST', '/api/projects', body),
+  cloneProject: (body: { url: string; name?: string }) => request<{ name: string }>('POST', '/api/projects/clone', body),
 }
 
 export const errorText: Record<string, string> = {

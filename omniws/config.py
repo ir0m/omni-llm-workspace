@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     omni_data_dir: Path = ROOT / "data"
     # Code-mode projects are the folders directly under this directory
     omni_projects_dir: Path = Path.home() / "omni-projects"
+    omni_allow_project_create: bool = True
+    omni_allow_git_clone: bool = True
     # Extra host names the browser may use, comma separated (for example the Tailscale name)
     omni_allowed_hosts: str = ""
 

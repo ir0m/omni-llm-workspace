@@ -48,7 +48,8 @@ class FakeProvider:
 
 
 def make_settings(tmp_path: Path, **values) -> Settings:
-    defaults = {"omni_allowed_hosts": "testserver", "omni_data_dir": tmp_path / "data", "omni_password": PASSWORD}
+    defaults = {"omni_allowed_hosts": "testserver", "omni_data_dir": tmp_path / "data", "omni_password": PASSWORD,
+                "omni_projects_dir": tmp_path / "projects"}
     return Settings(_env_file=None, **{**defaults, **values})
 
 
