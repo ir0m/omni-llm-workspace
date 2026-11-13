@@ -148,8 +148,13 @@ export default function MessageView({ message, providers, streaming, onFork, onR
 }) {
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div className="group flex flex-col items-end">
         <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-raised px-4 py-2.5">{textOf(message)}</div>
+        {textOf(message) && (
+          <span className="mt-1 flex text-xs md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+            <CopyButton text={textOf(message)} />
+          </span>
+        )}
       </div>
     )
   }

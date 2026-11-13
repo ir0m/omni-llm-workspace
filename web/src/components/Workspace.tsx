@@ -124,13 +124,19 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
     return () => window.removeEventListener('focus', loadProjects)
   }, [loadProjects])
   useEffect(() => {
-    const onHash = () => setSelected(idFromHash())
+    const onHash = () => {
+      const id = idFromHash()
+      if (id) setDraft((current) => (current.temporary ? { ...current, temporary: false } : current))
+      setSelected(id)
+    }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   const select = useCallback((id: string | null) => {
     window.location.hash = id ? `#/c/${id}` : ''
+    // A temporary draft applies to the one conversation made from it, never to the next new one
+    if (id) setDraft((current) => (current.temporary ? { ...current, temporary: false } : current))
     setSelected(id)
     setDrawerOpen(false)
   }, [])

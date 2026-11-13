@@ -32,26 +32,31 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
   const always = alwaysLabel(ask)
 
   return (
-    <div className="mx-auto mb-2 max-w-3xl rounded-2xl border border-warn/60 bg-bg p-3 shadow-lg">
-      <div className="flex items-center gap-2 text-sm font-medium">
+    <div className="mx-auto mb-2 flex max-h-[55dvh] max-w-3xl flex-col rounded-2xl border border-warn/60 bg-bg p-3 shadow-lg">
+      <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
         <ShieldAlert className="size-4 text-warn" aria-hidden />
         承認が必要です · {agent} が{ACTION[ask.kind] ?? ACTION.other}
       </div>
-      {ask.command && <pre className="mt-2 overflow-x-auto rounded-lg bg-raised px-3 py-2 font-mono text-sm">$ {ask.command}</pre>}
-      {ask.paths.length > 0 && !ask.command && (
-        <p className="mt-2 truncate font-mono text-sm">{ask.paths.join(', ')}</p>
-      )}
-      {ask.diff && (
-        <div className="mt-2">
-          <button onClick={() => setShowDiff((value) => !value)} className="text-xs text-muted underline">{showDiff ? '差分を隠す' : '差分を見る'}</button>
-          {showDiff && <div className="mt-1"><DiffView diff={ask.diff} /></div>}
-        </div>
-      )}
-      <p className={`mt-2 text-xs ${ask.outside_project ? 'text-danger' : 'text-muted'}`}>
-        {ask.outside_project ? '⚠ プロジェクトの外を対象にしています' : `場所: ${project ?? '—'}`}
-      </p>
+      {/* Long commands and diffs scroll here, so the answer buttons always stay on screen */}
+      <div className="min-h-0 shrink overflow-y-auto overscroll-contain">
+        {ask.command && (
+          <pre className="mt-2 whitespace-pre-wrap break-all rounded-lg bg-raised px-3 py-2 font-mono text-sm">$ {ask.command}</pre>
+        )}
+        {ask.paths.length > 0 && !ask.command && (
+          <p className="mt-2 truncate font-mono text-sm">{ask.paths.join(', ')}</p>
+        )}
+        {ask.diff && (
+          <div className="mt-2">
+            <button onClick={() => setShowDiff((value) => !value)} className="text-xs text-muted underline">{showDiff ? '差分を隠す' : '差分を見る'}</button>
+            {showDiff && <div className="mt-1"><DiffView diff={ask.diff} /></div>}
+          </div>
+        )}
+        <p className={`mt-2 text-xs ${ask.outside_project ? 'text-danger' : 'text-muted'}`}>
+          {ask.outside_project ? '⚠ プロジェクトの外を対象にしています' : `場所: ${project ?? '—'}`}
+        </p>
+      </div>
       {denying ? (
-        <div className="mt-3">
+        <div className="mt-3 shrink-0">
           <textarea
             autoFocus
             value={reason}
@@ -68,7 +73,7 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
           </div>
         </div>
       ) : (
-        <div className="mt-3 flex flex-wrap gap-2 text-sm">
+        <div className="mt-3 flex shrink-0 flex-wrap gap-2 text-sm">
           <button onClick={() => onAnswer('allow')} className="rounded-lg bg-accent px-4 py-1.5 font-medium text-accent-fg">許可</button>
           {always ? (
             <button onClick={() => onAnswer('allow_always')} className="rounded-lg border border-border px-3 py-1.5">{always}</button>

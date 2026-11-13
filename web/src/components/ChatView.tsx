@@ -31,6 +31,26 @@ function savedTarget(mode: Mode): Target | null {
   }
 }
 
+// What was typed survives switching conversations, leaving the page and reloads. A new conversation keeps one draft.
+const INPUT = 'omni.input'
+
+function readInput(id: string | null): string {
+  try {
+    return localStorage.getItem(`${INPUT}.${id ?? 'new'}`) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeInput(id: string | null, text: string) {
+  try {
+    if (text) localStorage.setItem(`${INPUT}.${id ?? 'new'}`, text)
+    else localStorage.removeItem(`${INPUT}.${id ?? 'new'}`)
+  } catch {
+    // storage full or disabled: the text simply isn't kept
+  }
+}
+
 const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
 
 type Props = {
@@ -72,7 +92,8 @@ export default function ChatView(props: Props) {
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [target, setTarget] = useState<Target | null>(null)
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(() => readInput(conversationId))
+  useEffect(() => writeInput(conversationId, input), [conversationId, input])
   const [sending, setSending] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelRevision, setPanelRevision] = useState(0)
@@ -241,6 +262,7 @@ export default function ChatView(props: Props) {
       setInput((current) => (current.trim() === text ? '' : current))
       stick.current = true
       if (id !== conversationId) {
+        writeInput(null, '')  // this view unmounts before its own effect would clear the draft
         props.onSelect(id)  // this view is replaced by one for the new conversation, which follows the run
       } else {
         setDetail((current) =>
