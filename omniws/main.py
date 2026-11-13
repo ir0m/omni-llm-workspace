@@ -15,6 +15,7 @@ from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
 from .db import make_engine, mark_interrupted, migrate, session_dependency
+from .agents.claude import ClaudeCodeAgent
 from .agents.codex import CodexAgent
 from .agents.opencode import OpenCodeAgent
 from .providers.registry import Registry
@@ -73,8 +74,9 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.state.settings = settings
     app.state.auth = Auth(settings)
     app.state.registry = registry or Registry(settings)
-    app.state.agents = agents if agents is not None else {"opencode": OpenCodeAgent(settings, app.state.registry),
-                                                          "codex": CodexAgent(settings)}
+    app.state.agents = agents if agents is not None else {
+        "opencode": OpenCodeAgent(settings, app.state.registry), "codex": CodexAgent(settings),
+        "claude_code": ClaudeCodeAgent(settings, "subscription"), "claude_code_api": ClaudeCodeAgent(settings, "api")}
     app.state.free_models = {}
     app.state.runs = RunManager()
     # Guards against DNS rebinding and cross-site requests: the app will run agents on this machine.

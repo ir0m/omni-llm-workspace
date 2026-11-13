@@ -23,8 +23,8 @@ from ..providers.base import ChatProvider, ChatRequest
 from ..runs import Run, RunManager
 
 TITLE_LENGTH = 40
-# Agents with their own login that take both Chat and Code turns
-SUBSCRIPTION_AGENTS = ("codex", "claude_code")
+# Agents that take both Chat and Code turns themselves (OpenCode only runs Code turns for providers)
+DIRECT_AGENTS = ("codex", "claude_code", "claude_code_api")
 router = APIRouter(prefix="/api/conversations")
 
 
@@ -220,7 +220,7 @@ async def send_message(conversation_id: str, body: Send, request: Request):
     agent_model = body.model
     if mode == "code" and (not project or not projects.exists(settings.omni_projects_dir, project)):
         raise HTTPException(status_code=400, detail="project_not_found")
-    if body.provider in SUBSCRIPTION_AGENTS and body.provider in state.agents:
+    if body.provider in DIRECT_AGENTS and body.provider in state.agents:
         agent = state.agents[body.provider]  # Codex, Claude Code: Chat and Code
         if not agent.installed():
             raise HTTPException(status_code=400, detail="agent_not_installed")

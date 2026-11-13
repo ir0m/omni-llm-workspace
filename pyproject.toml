@@ -7,6 +7,7 @@ license = "MIT"
 dependencies = [
   "alembic>=1.20,<2",
   "anthropic>=2.8,<3",
+  "claude-agent-sdk>=0.2.181,<0.3",
   "fastapi>=0.162,<1",
   "httpx2>=2.16,<3",
   "itsdangerous>=2.2,<3",

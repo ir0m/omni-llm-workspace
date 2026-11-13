@@ -5,6 +5,11 @@
 ## 現在地
 - P0 足場: 完了（`d7d0ac2`）
 - P1 Chat 基盤: 完了（2026-11-13。本物のAPIキー・ローカルLLMでの確認は未実施）
+- P2 エージェント層と Code: 完了（2026-11-13）
+  - OpenCode（ACP）・Codex（app-server）・Claude Code（Agent SDK、サブスク／API課金）
+  - 承認と `.env` 上限の権限判定、引き継ぎ、一時会話、使用率
+  - 実機確認: OpenCode 無料モデル、Codex（Plus）、Claude Code（Pro）
+  - 未確認: APIキー／ローカルLLMのモデルでのCode、Claude Code（API課金）、ブラウザ通知（HTTPSが必要）
 
 ## P1 Chat 基盤
 依存: なし

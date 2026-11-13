@@ -16,7 +16,9 @@ import UsageMeter from './UsageMeter'
 const LAST_TARGET = 'omni.lastTarget'
 const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
 const LEVELS: ApprovalMode[] = ['ask', 'auto_edit', 'auto']
-const AGENT_LABEL: Record<string, string> = { opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code' }
+const AGENT_LABEL: Record<string, string> = {
+  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code',
+}
 
 type Live = { runId: string; messageId: string; blocks: Block[]; usage: Usage | null; permissions: PermissionAsk[] }
 

@@ -14,15 +14,39 @@ function formatTokens(value: number): string {
 }
 
 export function UsageLine({ usage }: { usage: Usage }) {
+  const [open, setOpen] = useState(false)
   const parts = [`入力 ${formatTokens(usage.inputTokens ?? 0)}`, `出力 ${formatTokens(usage.outputTokens ?? 0)}`]
   if (usage.cacheReadTokens) parts.push(`キャッシュ ${formatTokens(usage.cacheReadTokens)}`)
   if (usage.reasoningTokens) parts.push(`推論 ${formatTokens(usage.reasoningTokens)}`)
   if (usage.costUsd !== undefined) parts.push(`$${usage.costUsd.toFixed(4)}`)
+  let context = ''
   if (usage.contextWindow) {
     const used = usage.contextUsed ?? (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0)
-    parts.push(`文脈 ${Math.max(1, Math.round((used / usage.contextWindow) * 100))}% / ${formatTokens(usage.contextWindow)}`)
+    context = `文脈 ${Math.max(1, Math.round((used / usage.contextWindow) * 100))}% / ${formatTokens(usage.contextWindow)}`
   }
-  return <span>{parts.join(' · ')}</span>
+  const breakdown = usage.contextBreakdown ?? []
+  return (
+    <span className="relative">
+      {parts.join(' · ')}
+      {context && ' · '}
+      {context && (breakdown.length > 0 ? (
+        <button onClick={() => setOpen((value) => !value)} className="underline decoration-dotted underline-offset-2 hover:text-fg" title="内訳を見る">
+          {context}
+        </button>
+      ) : context)}
+      {open && breakdown.length > 0 && (
+        <span className="absolute bottom-5 left-0 z-20 block w-64 rounded-lg border border-border bg-bg p-2 text-xs shadow-lg">
+          <span className="mb-1 block font-medium text-fg">文脈の内訳</span>
+          {breakdown.map((item) => (
+            <span key={item.name} className="flex justify-between gap-2">
+              <span className="truncate">{item.name}</span>
+              <span className="shrink-0 tabular-nums">{formatTokens(item.tokens)}</span>
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
+  )
 }
 
 function CopyButton({ text, label = 'コピー' }: { text: string; label?: string }) {
@@ -67,7 +91,9 @@ export function Markdown({ text }: { text: string }) {
   )
 }
 
-const AGENT_LABEL: Record<string, string> = { opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code' }
+const AGENT_LABEL: Record<string, string> = {
+  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code',
+}
 
 type Piece = { key: string; node: React.ReactNode }
 

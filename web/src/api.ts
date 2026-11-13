@@ -29,6 +29,7 @@ export type Usage = {
   costUsd?: number
   contextWindow?: number
   contextUsed?: number
+  contextBreakdown?: { name: string; tokens: number }[]
   stopReason?: string
 }
 
@@ -118,7 +119,13 @@ export type Executor = {
   usage?: SubscriptionUsage | null
 }
 
-export type UsageWindow = { label: string; usedPercent: number | null; resetsAt: number | null }
+export type UsageWindow = {
+  label: string
+  usedPercent: number | null
+  resetsAt: number | null
+  status?: 'allowed' | 'allowed_warning' | 'rejected' | null
+  at?: number | null
+}
 export type SubscriptionUsage = { plan: string | null; windows: UsageWindow[] }
 
 export type Project = {

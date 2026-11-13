@@ -37,7 +37,35 @@ async def list_executors(request: Request, refresh: bool = False):
     codex = state.agents.get("codex")
     if codex and codex.installed():
         overview.insert(0, await codex_entry(codex, refresh))
+    for position, agent_id in enumerate(("claude_code", "claude_code_api")):
+        agent = state.agents.get(agent_id)
+        if agent is not None and (agent.installed() or agent_id == "claude_code"):
+            overview.insert(position, await claude_entry(agent, refresh))
     return overview
+
+
+async def claude_entry(agent, refresh: bool) -> dict:
+    """Claude Code with the CLI's login (only when OMNI_ALLOW_CLAUDE_SUBSCRIPTION is set) or with the API key."""
+    subscription = agent.billing == "subscription"
+    entry = {"id": agent.id, "label": "Claude Code（サブスク）" if subscription else "Claude Code（API課金）",
+             "kind": "subscription" if subscription else "api", "configured": False, "error": None,
+             "setting": "OMNI_ALLOW_CLAUDE_SUBSCRIPTION=true" if subscription else "ANTHROPIC_API_KEY",
+             "modes": ["chat", "code"], "code_via": None, "models": [], "usage": None,
+             "note": "個人利用・自己責任" if subscription else None}
+    if not agent.installed():
+        return entry
+    try:
+        if subscription:
+            await agent.server_info(refresh)
+            plan = await agent.plan()
+            if not plan:
+                entry["setting"] = "claude auth login"
+                return entry
+            entry.update(label=f"Claude Code（{plan.removeprefix('Claude ')}）", usage=agent.usage())
+        entry.update(configured=True, models=[model.to_dict() for model in await agent.list_models()])
+    except ProviderError as exc:
+        entry["error"] = exc.to_dict()
+    return entry
 
 
 async def codex_entry(codex, refresh: bool) -> dict:

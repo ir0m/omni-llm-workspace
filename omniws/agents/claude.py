@@ -1,0 +1,361 @@
+"""Claude Code through the Claude Agent SDK.
+
+Two executors share this adapter:
+- `claude_code`: the CLI's own login (a Claude subscription). Only when OMNI_ALLOW_CLAUDE_SUBSCRIPTION is set:
+  Anthropic does not allow apps to collect or intermediate Claude.ai credentials, so the app never sees them,
+  and ANTHROPIC_API_KEY is blanked so the turn can't fall back to API billing.
+- `claude_code_api`: ANTHROPIC_API_KEY (pay as you go).
+
+Code turns use Claude Code's own system prompt and tools in the project, plus the project's CLAUDE.md; its
+settings files (allow rules, hooks) are not loaded, so every permission goes through the app's policy.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import difflib
+import json
+import os
+import time
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import claude_agent_sdk as sdk
+
+from ..config import Settings
+from ..events import Update, message_chunk, thought_chunk, usage_update
+from ..providers.base import ModelInfo, ProviderError
+from .base import PermissionRequest, Turn, inside
+
+OUTPUT_LIMIT = 12_000
+INFO_SECONDS = 600
+CLAUDE_MD_LIMIT = 40_000
+KINDS = {"Read": "read", "Glob": "search", "Grep": "search", "LS": "read", "Edit": "edit", "MultiEdit": "edit",
+         "Write": "edit", "NotebookEdit": "edit", "Bash": "execute", "BashOutput": "read", "KillShell": "execute",
+         "WebFetch": "fetch", "WebSearch": "fetch"}
+WINDOWS = {"five_hour": "5時間", "seven_day": "7日", "seven_day_opus": "7日（Opus）", "seven_day_sonnet": "7日（Sonnet）"}
+ERRORS = {401: "auth", 403: "auth", 404: "not_found", 429: "rate_limit", 529: "overloaded", 500: "overloaded"}
+
+
+def clip(text: str, limit: int = OUTPUT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n… （{len(text) - limit} 文字省略）…\n{text[-half:]}"
+
+
+def relative(path: str | None, cwd: Path) -> str | None:
+    if not path:
+        return None
+    try:
+        return str(Path(path).resolve().relative_to(cwd.resolve()))
+    except (ValueError, OSError):
+        return path
+
+
+def unified(path: str, old: str, new: str) -> str:
+    lines = difflib.unified_diff(old.splitlines(), new.splitlines(), f"a/{path}", f"b/{path}", lineterm="")
+    return "\n".join(lines) + "\n"
+
+
+def tool_fields(name: str, data: dict[str, Any], cwd: Path) -> dict[str, Any]:
+    """What a tool call shows: kind, title, command, path and a diff for edits."""
+    kind = KINDS.get(name, "other")
+    path = relative(data.get("file_path") or data.get("notebook_path") or data.get("path"), cwd)
+    fields: dict[str, Any] = {"kind": kind, "title": name, "path": path}
+    if name == "Bash":
+        fields.update(command=data.get("command"), title=data.get("description") or data.get("command") or name)
+    elif name in ("Glob", "Grep"):
+        fields["title"] = f"{name}: {data.get('pattern', '')}"
+    elif name == "Edit":
+        fields["diff"] = unified(path or "file", str(data.get("old_string", "")), str(data.get("new_string", "")))
+    elif name == "MultiEdit":
+        fields["diff"] = "".join(unified(path or "file", str(edit.get("old_string", "")), str(edit.get("new_string", "")))
+                                 for edit in data.get("edits") or [])
+    elif name == "Write":
+        old = ""
+        with contextlib.suppress(OSError):
+            target = Path(data.get("file_path", ""))
+            if target.is_file() and target.stat().st_size < 2_000_000:
+                old = target.read_text(encoding="utf-8", errors="replace")
+        fields["diff"] = unified(path or "file", old, str(data.get("content", "")))
+    elif name in ("WebFetch", "WebSearch"):
+        fields["title"] = f"{name}: {data.get('url') or data.get('query') or ''}"
+    elif name in ("Task", "Agent"):
+        fields["title"] = f"サブエージェント: {data.get('description', '')}"
+    if "diff" in fields:
+        fields["diff"] = clip(fields["diff"], 40_000)
+    return {key: value for key, value in fields.items() if value}
+
+
+def result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text")
+    return ""
+
+
+def plan_update(data: dict[str, Any]) -> Update:
+    return {"sessionUpdate": "plan", "entries": [{"content": todo.get("content", ""), "status": todo.get("status", "pending"),
+                                                  "priority": "medium"} for todo in data.get("todos") or [] if isinstance(todo, dict)]}
+
+
+def claude_md(cwd: Path) -> str | None:
+    """The project's CLAUDE.md (and CLAUDE.local.md), the only part of the project's Claude settings that is used."""
+    parts = []
+    for name in ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"):
+        path = cwd / name
+        if path.is_file():
+            parts.append(f"Contents of {name} (project instructions):\n\n{path.read_text(encoding='utf-8', errors='replace')}")
+    text = "\n\n".join(parts)
+    return text[:CLAUDE_MD_LIMIT] if text else None
+
+
+class ClaudeCodeAgent:
+    label = "Claude Code"
+
+    def __init__(self, settings: Settings, billing: str, cli_path: str | None = None) -> None:
+        self.settings = settings
+        self.billing = billing  # "subscription" | "api"
+        self.id = "claude_code" if billing == "subscription" else "claude_code_api"
+        self.cli_path = cli_path
+        self.info: dict[str, Any] | None = None
+        self.info_at = 0.0
+        self.usage_file = settings.omni_data_dir / "claude-usage.json"
+
+    def installed(self) -> bool:
+        if self.billing == "subscription":
+            return self.settings.omni_allow_claude_subscription
+        return self.settings.anthropic_api_key is not None
+
+    def env(self, temporary: bool = False) -> dict[str, str]:
+        """Blanks every inherited Anthropic/Claude variable so nothing from the server's environment (a key, a proxy,
+        a parent Claude Code session) decides how the turn is billed or routed."""
+        env = {key: "" for key in os.environ if key.startswith(("ANTHROPIC_", "CLAUDE_", "CLAUDECODE"))}
+        if self.billing == "api" and self.settings.anthropic_api_key:
+            env["ANTHROPIC_API_KEY"] = self.settings.anthropic_api_key.get_secret_value()
+        if temporary:
+            env.update(CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", CLAUDE_CODE_SKIP_PROMPT_HISTORY="1")
+        return env
+
+    def options(self, **values: Any) -> sdk.ClaudeAgentOptions:
+        base: dict[str, Any] = {"setting_sources": [], "strict_mcp_config": True, "include_partial_messages": True}
+        if self.cli_path:
+            base["cli_path"] = self.cli_path
+        return sdk.ClaudeAgentOptions(**{**base, **values})
+
+    async def server_info(self, refresh: bool = False) -> dict[str, Any]:
+        if self.info is not None and not refresh and time.monotonic() - self.info_at < INFO_SECONDS:
+            return self.info
+        options = self.options(cwd=str(Path.home()), tools=[], env=self.env(temporary=True),
+                               extra_args={"no-session-persistence": None})
+        try:
+            async with sdk.ClaudeSDKClient(options=options) as client:
+                self.info = await client.get_server_info() or {}
+        except (sdk.ClaudeSDKError, OSError) as exc:
+            raise ProviderError("unknown", f"Claude Code を起動できません: {exc}") from exc
+        self.info_at = time.monotonic()
+        return self.info
+
+    async def plan(self) -> str | None:
+        """The subscription's name (e.g. "Claude Pro"), or None when the CLI isn't signed in."""
+        account = (await self.server_info()).get("account") or {}
+        return account.get("subscriptionType")
+
+    async def list_models(self) -> list[ModelInfo]:
+        models = []
+        for item in (await self.server_info()).get("models") or []:
+            value = item.get("value")
+            if not value or value == "default":
+                continue
+            models.append(ModelInfo(id=value, name=item.get("displayName") or value,
+                                    efforts=tuple(item.get("supportedEffortLevels") or ()),
+                                    reasoning=bool(item.get("supportsAdaptiveThinking")),
+                                    extra={"resolved": item.get("resolvedModel")}))
+        return models
+
+    def usage(self) -> dict[str, Any] | None:
+        """The last rate-limit windows Claude Code reported, and when (they only arrive during turns)."""
+        try:
+            data = json.loads(self.usage_file.read_text())
+        except (OSError, ValueError):
+            return None
+        # Claude sends a percentage only when usage is high; otherwise just a status
+        windows = [{"label": WINDOWS.get(key, key), "usedPercent": value.get("usedPercent"), "resetsAt": value.get("resetsAt"),
+                    "status": value.get("status"), "at": value.get("at")} for key, value in data.get("windows", {}).items()]
+        return {"plan": data.get("plan"), "windows": windows} if windows else None
+
+    def remember_limit(self, info: Any) -> None:
+        if getattr(info, "rate_limit_type", None) not in WINDOWS:
+            return
+        try:
+            data = json.loads(self.usage_file.read_text())
+        except (OSError, ValueError):
+            data = {}
+        utilization = getattr(info, "utilization", None)
+        data.setdefault("windows", {})[info.rate_limit_type] = {
+            "usedPercent": round(utilization * 100) if isinstance(utilization, (int, float)) else None,
+            "resetsAt": getattr(info, "resets_at", None), "status": getattr(info, "status", None), "at": int(time.time())}
+        if self.info and (self.info.get("account") or {}).get("subscriptionType"):
+            data["plan"] = self.info["account"]["subscriptionType"]
+        self.usage_file.parent.mkdir(parents=True, exist_ok=True)
+        self.usage_file.write_text(json.dumps(data))
+
+    def permission_handler(self, turn: Turn):
+        async def can_use_tool(name: str, data: dict[str, Any], context: Any):
+            if name == "TodoWrite":
+                return sdk.PermissionResultAllow()
+            fields = tool_fields(name, data, turn.cwd)
+            paths = [path for path in [data.get("file_path"), data.get("notebook_path"), data.get("path")] if path]
+            blocked = getattr(context, "blocked_path", None)
+            request = PermissionRequest(
+                tool_call_id=getattr(context, "tool_use_id", None) or "", kind=fields["kind"],
+                title=fields.get("title", name), command=fields.get("command"),
+                paths=[relative(path, turn.cwd) or path for path in paths], diff=fields.get("diff"),
+                outside_project=any(not inside(turn.cwd, path) for path in paths) or bool(blocked and not inside(turn.cwd, blocked)))
+            try:
+                decision = await turn.ask_permission(request)
+            except asyncio.CancelledError:
+                return sdk.PermissionResultDeny(message="The user stopped this turn.", interrupt=True)
+            if decision.outcome == "deny":
+                return sdk.PermissionResultDeny(message=decision.message or "The user declined this action.")
+            return sdk.PermissionResultAllow()
+        return can_use_tool
+
+    def turn_options(self, turn: Turn, resume: str | None) -> sdk.ClaudeAgentOptions:
+        values: dict[str, Any] = {"cwd": str(turn.cwd), "model": turn.model, "env": self.env(turn.temporary)}
+        if turn.effort:
+            values["effort"] = turn.effort
+        if resume:
+            values["resume"] = resume
+        if turn.temporary:
+            values["extra_args"] = {"no-session-persistence": None}
+        if turn.mode == "chat":
+            values["tools"] = []
+        else:
+            prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
+            if (instructions := claude_md(turn.cwd)):
+                prompt["append"] = instructions
+            values.update(system_prompt=prompt, can_use_tool=self.permission_handler(turn), permission_mode="default")
+        return self.options(**values)
+
+    async def run(self, turn: Turn) -> AsyncIterator[Update]:
+        resume = None if turn.temporary else turn.native_session
+        try:
+            async for update in self._run(turn, resume):
+                yield update
+        except _ResumeFailed:
+            async for update in self._run(turn, None):  # the session is gone: start over with the whole conversation
+                yield update
+
+    async def _run(self, turn: Turn, resume: str | None) -> AsyncIterator[Update]:
+        prompt = turn.prompt if resume else turn.fresh_prompt
+        started = False
+        try:
+            async with sdk.ClaudeSDKClient(options=self.turn_options(turn, resume)) as client:
+                await client.query(prompt)
+                result = None
+                async for message in client.receive_response():
+                    started = True
+                    for update in self.updates(message, turn):
+                        yield update
+                    if isinstance(message, sdk.ResultMessage):
+                        result = message
+                usage = self.usage_from(result)
+                with contextlib.suppress(Exception):
+                    context = await client.get_context_usage()
+                    usage.update(self.context_from(context))
+                if result is not None and result.is_error:
+                    raise self.error_from(result)
+                yield usage
+        except asyncio.CancelledError:
+            raise
+        except ProviderError:
+            raise
+        except (sdk.ClaudeSDKError, OSError) as exc:
+            if resume and not started:
+                raise _ResumeFailed from exc
+            raise ProviderError("unknown", f"Claude Code でエラーが起きました: {str(exc)[:200]}") from exc
+
+    def updates(self, message: Any, turn: Turn) -> list[Update]:
+        if isinstance(message, sdk.StreamEvent):
+            if message.parent_tool_use_id:  # a subagent's own stream
+                return []
+            delta = (message.event or {}).get("delta") or {}
+            if delta.get("type") == "text_delta" and delta.get("text"):
+                return [message_chunk(delta["text"])]
+            if delta.get("type") == "thinking_delta" and delta.get("thinking"):
+                return [thought_chunk(delta["thinking"])]
+            return []
+        if isinstance(message, sdk.SystemMessage):
+            session_id = (message.data or {}).get("session_id")
+            if message.subtype == "init" and session_id and not turn.temporary:
+                turn.on_session(session_id)
+            return []
+        if isinstance(message, sdk.RateLimitEvent):
+            self.remember_limit(message.rate_limit_info)
+            return []
+        out: list[Update] = []
+        if isinstance(message, sdk.AssistantMessage) and not message.parent_tool_use_id:
+            for block in message.content:
+                if isinstance(block, sdk.ToolUseBlock):
+                    if block.name == "TodoWrite":
+                        out.append(plan_update(block.input or {}))
+                        continue
+                    out.append({"sessionUpdate": "tool_call", "toolCallId": block.id, "status": "in_progress",
+                                **tool_fields(block.name, block.input or {}, turn.cwd)})
+        elif isinstance(message, sdk.UserMessage) and not message.parent_tool_use_id and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, sdk.ToolResultBlock):
+                    update: Update = {"sessionUpdate": "tool_call_update", "toolCallId": block.tool_use_id,
+                                      "status": "failed" if block.is_error else "completed"}
+                    text = result_text(block.content)
+                    if text:
+                        update["output"] = clip(text)
+                    out.append(update)
+        return out
+
+    def usage_from(self, result: Any) -> Update:
+        usage = (getattr(result, "usage", None) or {}) if result else {}
+        update = usage_update(input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
+                              cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
+                              cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+                              cost_usd=result.total_cost_usd if result and self.billing == "api" else None,
+                              stop_reason=getattr(result, "stop_reason", None) if result else None)
+        return update
+
+    @staticmethod
+    def context_from(context: Any) -> dict[str, Any]:
+        get = (lambda key: context.get(key)) if isinstance(context, dict) else (lambda key: getattr(context, key, None))
+        categories = []
+        for item in get("categories") or []:
+            name = item.get("name") if isinstance(item, dict) else getattr(item, "name", "")
+            tokens = item.get("tokens") if isinstance(item, dict) else getattr(item, "tokens", 0)
+            if name and name not in ("Free space",) and tokens:
+                categories.append({"name": name, "tokens": tokens})
+        return {"contextUsed": get("totalTokens"), "contextWindow": get("maxTokens"), "contextBreakdown": categories}
+
+    def error_from(self, result: Any) -> ProviderError:
+        status = getattr(result, "api_error_status", None)
+        text = (getattr(result, "result", None) or "") + " ".join(getattr(result, "errors", None) or [])
+        lowered = text.lower()
+        if status == 429 or "usage limit" in lowered or "limit reached" in lowered:
+            return ProviderError("rate_limit", "Claude の利用上限に達しました")
+        if status in (401, 403) or "login" in lowered or "authenticat" in lowered:
+            hint = "claude auth login を実行してください" if self.billing == "subscription" else "ANTHROPIC_API_KEY を確認してください"
+            return ProviderError("auth", hint)
+        return ProviderError(ERRORS.get(status, "unknown"), text[:300] or "Claude Code でエラーが起きました")
+
+    async def forget(self, native_session: str, cwd: Path) -> None:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(sdk.delete_session, native_session, str(cwd))
+
+    async def close(self) -> None:
+        return None
+
+
+class _ResumeFailed(Exception):
+    pass
