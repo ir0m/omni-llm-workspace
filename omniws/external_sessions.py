@@ -14,6 +14,7 @@ from .db import now_ms
 from .models import AgentSession, Conversation, ExternalSession, Message
 from .providers.base import ProviderError
 
+START_GRACE_MS = 10_000  # CLI timestamps may be rounded down to the second
 
 def family(agent: str) -> str:
     return "claude" if agent.startswith("claude_code") else agent
@@ -28,6 +29,31 @@ class ExternalSessions:
         self.state = state
         # Discovery, history refresh and preparing sends must not race one another.
         self.lock = asyncio.Lock()
+        # A CLI writes its transcript before the app learns the session id. Until that id is stored,
+        # discovery must not import the app's own running session as a separate conversation.
+        self.starting: dict[str, tuple[str, str, int]] = {}  # send token -> (family, cwd, started at)
+        self.claimed: set[tuple[str, str]] = set()  # (family, native id) started by the app
+
+    def begin_send(self, agent_id: str, cwd: Path) -> str:
+        token = str(uuid.uuid4())
+        self.starting[token] = (family(agent_id), str(Path(cwd).resolve()), now_ms())
+        return token
+
+    def claim(self, token: str, agent_id: str, native_id: str) -> None:
+        """Call after the id is stored: the claim covers the gap until discovery reads it."""
+        self.claimed.add((family(agent_id), native_id))
+        self.end_send(token)
+
+    def end_send(self, token: str) -> None:
+        self.starting.pop(token, None)
+
+    def owned_by_app(self, key: tuple[str, str], cwd: str, item) -> bool:
+        if key in self.claimed:
+            return True
+        created = item.created_at or now_ms()
+        # Defer, not drop: a genuine CLI session is imported by a later scan once the send has its id.
+        return any(owner == key[0] and path == cwd and created >= started - START_GRACE_MS
+                   for owner, path, started in list(self.starting.values()))
 
     async def discover(self) -> dict:
         state = self.state
@@ -67,7 +93,7 @@ class ExternalSessions:
                         conversation.updated_at = item.updated_at
                         conversation.sort_key = max(conversation.sort_key, float(item.updated_at))
                     continue
-                if key in known:
+                if key in known or self.owned_by_app(key, str(cwd.resolve()), item):
                     continue
                 now = now_ms()
                 created, updated = item.created_at or now, item.updated_at or now

@@ -11,6 +11,7 @@ from omniws.agents.claude import ClaudeCodeAgent
 from omniws.agents.codex import CodexAgent
 from omniws.agents.jsonrpc import RpcError
 from omniws.agents.session_history import HistoryTurn, SessionInfo, claude_history, codex_history
+from omniws.db import now_ms
 from omniws.events import message_chunk
 from omniws.main import create_app
 from omniws.models import AgentSession
@@ -154,6 +155,54 @@ def test_already_linked_app_sessions_are_not_duplicated(native_client):
     assert len(discover(client)) == 2
     client.delete(f"/api/conversations/{created['id']}")
     assert len(discover(client)) == 1
+
+
+class LiveAgent(NativeAgent):
+    """A CLI that writes its session to disk as soon as a turn starts, like Claude Code."""
+
+    def __init__(self, agent_id, cwd, announce):
+        super().__init__(agent_id, cwd)
+        self.sessions, self.announce = [], announce
+
+    async def list_sessions(self, cwd):
+        return list(self.sessions)
+
+    async def run(self, turn):
+        stamp = now_ms()
+        self.sessions.append(SessionInfo("live", "CLIが付けた要約", str(self.cwd.resolve()), stamp, stamp))
+        if self.announce:
+            turn.on_session("live")
+        await turn.ask_permission(PermissionRequest("shell", "execute", "test", command="echo test"))
+        yield message_chunk("完了")
+
+
+@pytest.mark.parametrize("announce", [True, False])
+def test_running_app_session_is_not_imported_as_another_conversation(native_client, announce):
+    client, agents = native_client
+    agent = LiveAgent("claude_code", agents["claude_code"].cwd, announce)
+    agents["claude_code"] = agent
+    del agents["codex"]
+    created = client.post("/api/conversations", json={"mode": "code", "project": "app"}).json()
+    started = client.post(f"/api/conversations/{created['id']}/messages",
+                          json={"text": "作業して", "provider": "claude_code", "model": "m1"})
+    during = []
+
+    def scan_while_running(_event):
+        during.append(discover(client))
+        if announce:  # stored when the agent reports it, not when the reply ends
+            with client.app.state.sessions() as session:
+                during.append(session.scalar(select(AgentSession.native_id)))
+        return "allow"
+
+    events = follow(client, started.json()["run_id"], scan_while_running)
+    assert events[-1][1]["status"] == "complete"
+    assert [item["id"] for item in during[0]] == [created["id"]]
+    if announce:
+        assert during[1] == "live"
+        assert [item["id"] for item in discover(client)] == [created["id"]]
+    else:
+        # The app never learned the id, so the session really is the CLI's: a later scan imports it.
+        assert len(discover(client)) == 2
 
 
 def test_read_failure_preserves_history_and_blocks_send(native_client):

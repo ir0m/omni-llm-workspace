@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Literal
 
@@ -23,6 +24,7 @@ from ..external_sessions import origin, remember_deleted
 from ..providers.base import ChatProvider, ChatRequest
 from ..runs import Run, RunManager
 
+log = logging.getLogger(__name__)
 TITLE_LENGTH = 40
 # Agents that take both Chat and Code turns themselves (OpenCode only runs Code turns for providers)
 DIRECT_AGENTS = ("codex", "claude_code", "claude_code_api")
@@ -300,8 +302,26 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
     prepared = await run_in_threadpool(prepare)
     reply_id = prepared["reply"]["id"]
     native_box = {"id": prepared.get("native"), "turn": None}
+    external_sessions = state.external_sessions
+    send_token = None
+
+    def store_native(session) -> None:
+        record = session.scalar(select(AgentSession).where(AgentSession.conversation_id == conversation_id,
+                                                           AgentSession.agent == agent.id))
+        if record is None:
+            session.add(AgentSession(conversation_id=conversation_id, agent=agent.id, native_id=native_box["id"],
+                                     synced_seq=prepared["seq"]))
+        else:
+            record.native_id, record.synced_seq = native_box["id"], prepared["seq"]
 
     def save(status: str, content: list[dict], usage: dict | None, error: dict | None) -> None:
+        try:
+            _save(status, content, usage, error)
+        finally:
+            if send_token:
+                external_sessions.end_send(send_token)
+
+    def _save(status: str, content: list[dict], usage: dict | None, error: dict | None) -> None:
         with state.sessions.begin() as session:
             message = session.get(Message, reply_id)
             if message is not None:
@@ -321,13 +341,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
                     external.pending = pending
             if agent is None or prepared["temporary"] or not native_box["id"]:
                 return
-            record = session.scalar(select(AgentSession).where(AgentSession.conversation_id == conversation_id,
-                                                               AgentSession.agent == agent.id))
-            if record is None:
-                session.add(AgentSession(conversation_id=conversation_id, agent=agent.id, native_id=native_box["id"],
-                                         synced_seq=prepared["seq"]))
-            else:
-                record.native_id, record.synced_seq = native_box["id"], prepared["seq"]
+            store_native(session)
 
     if agent is None:
         chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort)
@@ -349,7 +363,20 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
         return policy.decide(permission, prepared["approval_mode"], rules, settings)
 
     def on_session(session_id: str) -> None:
+        changed = native_box["id"] != session_id
         native_box["id"] = session_id
+        if prepared["temporary"]:
+            return
+        if changed:
+            # Store the id now, not when the reply ends: the CLI has already written the session to disk
+            # and discovery would otherwise import it as a second conversation.
+            try:
+                with state.sessions.begin() as session:
+                    if session.get(Conversation, conversation_id) is not None:
+                        store_native(session)
+            except Exception:
+                log.exception("storing the session id of %s failed", conversation_id)  # save() retries at the end
+        external_sessions.claim(send_token, agent.id, session_id)
 
     def on_turn_id(turn_id: str) -> None:
         native_box["turn"] = turn_id
@@ -365,6 +392,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
         async for update in agent.run(turn):
             yield update
 
+    if not prepared["temporary"]:
+        send_token = external_sessions.begin_send(agent.id, cwd)
     run = runs.start(conversation_id, reply_id, agent_stream, save, decide=decide)
     run.rules = rules
     return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
