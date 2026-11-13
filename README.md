@@ -15,6 +15,11 @@ uv run python -m omniws  # http://127.0.0.1:8300
 
 フロントを開発するときは `cd web && npm run dev`（/api は 8300 に転送）。
 
+## ドキュメント
+
+- [ロードマップ](docs/roadmap.md)
+- [競合・OSS調査とアーキテクチャ再評価（2026-11-13）](docs/research/2026-11-13-landscape.md)
+
 ## ライセンス
 
 MIT
