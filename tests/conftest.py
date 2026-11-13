@@ -59,9 +59,14 @@ def providers():
 
 
 @pytest.fixture
-def client(tmp_path, providers):
+def agents():
+    return {}
+
+
+@pytest.fixture
+def client(tmp_path, providers, agents):
     settings = make_settings(tmp_path)
-    app = create_app(settings, web_dist=Path("/nonexistent"), registry=Registry(settings, providers))
+    app = create_app(settings, web_dist=Path("/nonexistent"), registry=Registry(settings, providers), agents=agents)
     with TestClient(app) as test_client:
         assert test_client.post("/api/auth/login", json={"password": PASSWORD}).status_code == 200
         yield test_client

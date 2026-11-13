@@ -26,6 +26,9 @@ class Conversation(Base):
     forked_from: Mapped[str | None] = mapped_column(String(36), default=None)
     # The last selection, so the next message starts from it: {"provider", "model", "effort"}
     target: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    # Code mode: ask | auto_edit | auto (None: OMNI_APPROVAL_DEFAULT), and what "always allow" remembered
+    approval_mode: Mapped[str | None] = mapped_column(String(12), default=None)
+    allow_rules: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
     created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
     updated_at: Mapped[int] = mapped_column(Integer, default=now_ms)
 
@@ -42,7 +45,7 @@ class Message(Base):
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
     seq: Mapped[int] = mapped_column(Integer)
     role: Mapped[str] = mapped_column(String(10))  # user | assistant
-    # Content blocks: {"type": "text", "text": ...}, {"type": "thinking", "text": ...}
+    # Content blocks (see blocks.py): text, thinking, tool_call, plan, handover
     content: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     provider: Mapped[str | None] = mapped_column(String(40), default=None)
     model: Mapped[str | None] = mapped_column(String(200), default=None)

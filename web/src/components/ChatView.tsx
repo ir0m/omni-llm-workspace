@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUp, Menu, Square, Timer } from 'lucide-react'
-import { api, type ConversationDetail, type Draft, type Executor, type Mode, type ProjectList, type Target, type Usage } from '../api'
+import {
+  api, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
+  type PermissionAsk, type ProjectList, type Target, type Usage,
+} from '../api'
+import { applyUpdate, mergeUsage } from '../blocks'
+import { askToNotify, notify } from '../notify'
+import ApprovalCard from './ApprovalCard'
 import ExecutorPicker, { firstTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
+import PlanBar from './PlanBar'
 import ProjectPicker from './ProjectPicker'
 
 const LAST_TARGET = 'omni.lastTarget'
+const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
+const LEVELS: ApprovalMode[] = ['ask', 'auto_edit', 'auto']
+const AGENT_LABEL: Record<string, string> = { opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code' }
 
-type Live = { runId: string; messageId: string; text: string; thought: string; usage: Usage | null }
+type Live = { runId: string; messageId: string; blocks: Block[]; usage: Usage | null; permissions: PermissionAsk[] }
 
 function savedTarget(mode: Mode): Target | null {
   try {
@@ -25,6 +35,7 @@ type Props = {
   onDraftChange: (draft: Draft) => void
   executors: Executor[]
   projects: ProjectList | null
+  config: AppConfig | null
   onProjectsChanged: () => void
   onRefreshExecutors: () => void
   onOpenMenu: () => void
@@ -52,12 +63,13 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
 }
 
 export default function ChatView(props: Props) {
-  const { conversationId, executors, onError, onChanged } = props
+  const { conversationId, executors, onError, onChanged, config } = props
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [target, setTarget] = useState<Target | null>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [followup, setFollowup] = useState<string | null>(null)
   const source = useRef<EventSource | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -65,6 +77,7 @@ export default function ChatView(props: Props) {
   const mode: Mode = detail ? detail.mode : props.draft.mode
   const project = detail ? detail.project : props.draft.project
   const temporary = detail ? detail.temporary : props.draft.temporary
+  const approval: ApprovalMode = (detail ? detail.approval_mode : props.draft.approval_mode) ?? config?.approval_default ?? 'auto_edit'
 
   const load = useCallback(
     (id: string) =>
@@ -78,31 +91,39 @@ export default function ChatView(props: Props) {
   const follow = useCallback(
     (runId: string, messageId: string) => {
       source.current?.close()
-      setLive({ runId, messageId, text: '', thought: '', usage: null })
+      setLive({ runId, messageId, blocks: [], usage: null, permissions: [] })
       const events = new EventSource(`/api/runs/${runId}/events`)
       source.current = events
+      const change = (update: (current: Live) => Live) =>
+        setLive((current) => (current && current.runId === runId ? update(current) : current))
       events.addEventListener('update', (event) => {
         const update = JSON.parse((event as MessageEvent).data)
-        setLive((current) => {
-          if (!current || current.runId !== runId) return current
-          if (update.sessionUpdate === 'agent_message_chunk') return { ...current, text: current.text + update.content.text }
-          if (update.sessionUpdate === 'agent_thought_chunk') return { ...current, thought: current.thought + update.content.text }
-          if (update.sessionUpdate === 'usage_update') {
-            const { sessionUpdate: _kind, ...usage } = update
-            return { ...current, usage }
-          }
-          return current
-        })
+        change((current) => update.sessionUpdate === 'usage_update'
+          ? { ...current, usage: mergeUsage(current.usage, update) }
+          : { ...current, blocks: applyUpdate(current.blocks, update) })
+      })
+      events.addEventListener('permission', (event) => {
+        const ask: PermissionAsk = JSON.parse((event as MessageEvent).data)
+        change((current) => ({ ...current, permissions: [...current.permissions.filter((item) => item.requestId !== ask.requestId), ask] }))
+        notify('承認が必要です', ask.command ?? (ask.paths.join(', ') || ask.title))
+      })
+      events.addEventListener('permission_resolved', (event) => {
+        const { requestId } = JSON.parse((event as MessageEvent).data)
+        change((current) => ({ ...current, permissions: current.permissions.filter((item) => item.requestId !== requestId) }))
       })
       const finish = () => {
         events.close()
         if (source.current === events) source.current = null
         if (conversationId) load(conversationId).finally(() => setLive(null)).catch(onError)
+        else setLive(null)
         onChanged()
       }
       events.addEventListener('status', (event) => {
         const status = JSON.parse((event as MessageEvent).data).status
-        if (status !== 'running') finish()
+        if (status !== 'running') {
+          notify(status === 'complete' ? '応答が完了しました' : '応答が止まりました', document.title)
+          finish()
+        }
       })
       events.onerror = () => {
         if (events.readyState === EventSource.CLOSED) finish()  // the run is gone; show what was saved
@@ -137,14 +158,21 @@ export default function ChatView(props: Props) {
     if (element && stick.current) element.scrollTop = element.scrollHeight
   })
 
+  // The tab title shows what is waiting
+  useEffect(() => {
+    const base = detail?.title ? `${detail.title} · OmniLLMWorkspace` : 'OmniLLMWorkspace'
+    document.title = live?.permissions.length ? `（承認待ち）${base}` : live ? `（応答中）${base}` : base
+  }, [live, detail?.title])
+
   function chooseTarget(next: Target) {
     setTarget(next)
     localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next))
   }
 
-  async function change(patch: { mode?: Mode; project?: string }) {
+  async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; clear_allow_rules?: boolean }) {
     if (!detail) {
-      props.onDraftChange({ ...props.draft, ...patch })
+      const { clear_allow_rules: _clear, ...rest } = patch
+      props.onDraftChange({ ...props.draft, ...rest })
       return
     }
     try {
@@ -164,18 +192,18 @@ export default function ChatView(props: Props) {
 
   const executor = executors.find((item) => item.id === target?.provider)
   const blocked = mode === 'code' && !project ? 'プロジェクトを選んでください'
-    : executor && !usable(executor, mode) ? (mode === 'code' ? 'Codeを動かせる実行元を選んでください（エージェントは次の段階で追加）' : 'この実行元は Chat で使えません')
+    : executor && !usable(executor, mode) ? (mode === 'code' ? 'この実行元は Code で使えません' : 'この実行元は Chat で使えません')
     : null
 
-  async function send() {
-    const text = input.trim()
+  const sendText = useCallback(async (text: string) => {
     if (!text || !target || sending || live || blocked) return
     setSending(true)
+    if (mode === 'code') askToNotify()
     try {
       let id = conversationId
       if (!id) id = (await api.create(props.draft)).id
       const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort })
-      setInput('')
+      setInput((current) => (current.trim() === text ? '' : current))
       stick.current = true
       if (id !== conversationId) {
         props.onSelect(id)  // this view is replaced by one for the new conversation, which follows the run
@@ -191,6 +219,28 @@ export default function ChatView(props: Props) {
     } finally {
       setSending(false)
     }
+  }, [target, sending, live, blocked, mode, conversationId, props, follow, onChanged, onError])
+
+  // After "deny with a reason" stopped the turn, the reason becomes the next message
+  useEffect(() => {
+    if (!live && followup && !sending) {
+      setFollowup(null)
+      sendText(followup)
+    }
+  }, [live, followup, sending, sendText])
+
+  async function answer(ask: PermissionAsk, outcome: 'allow' | 'allow_always' | 'deny', reason?: string) {
+    if (!live) return
+    try {
+      await api.answer(live.runId, ask.requestId, outcome, reason)
+      if (outcome === 'deny' && reason) {
+        setFollowup(reason)
+        await api.cancel(live.runId)
+      }
+      if (outcome === 'allow_always' && conversationId) load(conversationId).catch(onError)
+    } catch (error) {
+      onError(error)
+    }
   }
 
   async function fork(messageId: string) {
@@ -205,7 +255,12 @@ export default function ChatView(props: Props) {
   }
 
   const messages = detail?.messages ?? []
-  const nothingUsable = executors.length > 0 && !executors.some((item) => usable(item, 'chat'))
+  const nothingUsable = executors.length > 0 && !executors.some((item) => usable(item, 'chat') || usable(item, 'code'))
+  const plan = live?.blocks.find((block) => block.type === 'plan')
+  const ask = live?.permissions[0]
+  const liveAgent = messages.find((message) => message.id === live?.messageId)?.agent
+  const maxLevel = LEVELS.indexOf(config?.approval_max ?? 'auto')
+  const rules = detail?.allow_rules ?? []
 
   const controls = (
     <>
@@ -222,6 +277,24 @@ export default function ChatView(props: Props) {
         />
       )}
       <ExecutorPicker executors={executors} mode={mode} target={target} onChange={chooseTarget} onRefresh={props.onRefreshExecutors} />
+      {mode === 'code' && (
+        <select
+          value={approval}
+          onChange={(event) => {
+            const value = event.target.value
+            if (value === '__clear') change({ clear_allow_rules: true })
+            else change({ approval_mode: value as ApprovalMode })
+          }}
+          className="shrink-0 rounded-lg border border-border bg-bg px-2 py-1.5 text-sm"
+          aria-label="承認"
+          title="この会話での承認のしかた（.env の上限まで）"
+        >
+          {LEVELS.map((level, index) => (
+            <option key={level} value={level} disabled={index > maxLevel}>承認: {APPROVAL_LABEL[level]}</option>
+          ))}
+          {rules.length > 0 && <option value="__clear">「常に許可」の記憶を消す（{rules.length}件）</option>}
+        </select>
+      )}
     </>
   )
 
@@ -238,9 +311,9 @@ export default function ChatView(props: Props) {
               <Timer className="size-3" aria-hidden /> 一時
             </span>
           )}
-          <div className="ml-auto hidden min-w-0 items-center gap-2 lg:flex">{controls}</div>
+          <div className="ml-auto hidden min-w-0 items-center gap-2 2xl:flex">{controls}</div>
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto px-3 pb-2 lg:hidden">{controls}</div>
+        <div className="flex items-center gap-2 overflow-x-auto px-3 pb-2 2xl:hidden">{controls}</div>
       </header>
 
       <div
@@ -283,6 +356,16 @@ export default function ChatView(props: Props) {
       </div>
 
       <div className="border-t border-border bg-bg px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        {plan && plan.type === 'plan' && plan.entries.length > 0 && <PlanBar entries={plan.entries} />}
+        {ask && (
+          <ApprovalCard
+            key={ask.requestId}
+            ask={ask}
+            agent={AGENT_LABEL[liveAgent ?? ''] ?? 'エージェント'}
+            project={project}
+            onAnswer={(outcome, reason) => answer(ask, outcome, reason)}
+          />
+        )}
         {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
           <textarea
@@ -292,7 +375,7 @@ export default function ChatView(props: Props) {
               // Enter sends on a keyboard; on touch screens Enter is a new line. Never while the IME is composing.
               if (event.key === 'Enter' && !event.shiftKey && !touch && !event.nativeEvent.isComposing) {
                 event.preventDefault()
-                send()
+                sendText(input.trim())
               }
             }}
             rows={Math.min(8, Math.max(1, input.split('\n').length))}
@@ -305,7 +388,7 @@ export default function ChatView(props: Props) {
             </button>
           ) : (
             <button
-              onClick={send}
+              onClick={() => sendText(input.trim())}
               disabled={!input.trim() || !target || sending || blocked !== null}
               className="rounded-xl bg-accent p-2 text-accent-fg disabled:opacity-40"
               aria-label="送信"

@@ -3,7 +3,9 @@ import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy, GitBranch } from 'lucide-react'
-import { errorText, textOf, type Message, type Executor, type Usage } from '../api'
+import { errorText, textOf, type Block, type Executor, type Message, type ToolCall, type Usage } from '../api'
+import { PlanSummary } from './PlanBar'
+import { isReading, ReadGroup, ToolCard } from './ToolCard'
 
 const STATUS_LABEL: Record<string, string> = { cancelled: '停止しました', interrupted: 'サーバーの再起動で中断しました' }
 
@@ -17,7 +19,7 @@ export function UsageLine({ usage }: { usage: Usage }) {
   if (usage.reasoningTokens) parts.push(`推論 ${formatTokens(usage.reasoningTokens)}`)
   if (usage.costUsd !== undefined) parts.push(`$${usage.costUsd.toFixed(4)}`)
   if (usage.contextWindow) {
-    const used = (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0)
+    const used = usage.contextUsed ?? (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0)
     parts.push(`文脈 ${Math.max(1, Math.round((used / usage.contextWindow) * 100))}% / ${formatTokens(usage.contextWindow)}`)
   }
   return <span>{parts.join(' · ')}</span>
@@ -65,10 +67,56 @@ export function Markdown({ text }: { text: string }) {
   )
 }
 
+const AGENT_LABEL: Record<string, string> = { opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code' }
+
+type Piece = { key: string; node: React.ReactNode }
+
+/** Blocks in order; consecutive reads become one line, the plan is shown above the composer while live. */
+function pieces(blocks: Block[], live: boolean): Piece[] {
+  const out: Piece[] = []
+  const last = blocks.length - 1
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]
+    if (block.type === 'handover' || (block.type === 'plan' && live)) continue
+    if (block.type === 'plan') {
+      out.push({ key: `plan-${index}`, node: <PlanSummary entries={block.entries} /> })
+    } else if (block.type === 'text') {
+      if (block.text) out.push({ key: `text-${index}`, node: <Markdown text={block.text} /> })
+    } else if (block.type === 'thinking') {
+      if (!block.text) continue
+      out.push({
+        key: `thinking-${index}`,
+        node: (
+          <details className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-muted" open={live && index === last}>
+            <summary className="cursor-pointer select-none">思考</summary>
+            <div className="mt-2 whitespace-pre-wrap">{block.text}</div>
+          </details>
+        ),
+      })
+    } else if (block.type === 'tool_call') {
+      const run: ToolCall[] = []
+      while (index <= last && blocks[index].type === 'tool_call' && isReading(blocks[index] as ToolCall)) {
+        run.push(blocks[index] as ToolCall)
+        index++
+      }
+      if (run.length >= 2) {
+        out.push({ key: `reads-${run[0].id}`, node: <ReadGroup blocks={run} /> })
+        index--
+      } else if (run.length === 1) {
+        out.push({ key: run[0].id, node: <ToolCard block={run[0]} /> })
+        index--
+      } else {
+        out.push({ key: block.id, node: <ToolCard block={block} /> })
+      }
+    }
+  }
+  return out
+}
+
 export default function MessageView({ message, providers, streaming, onFork }: {
   message: Message
   providers: Executor[]
-  streaming?: { text: string; thought: string; usage: Usage | null }
+  streaming?: { blocks: Block[]; usage: Usage | null }
   onFork: () => void
 }) {
   if (message.role === 'user') {
@@ -78,27 +126,34 @@ export default function MessageView({ message, providers, streaming, onFork }: {
       </div>
     )
   }
-  const text = streaming ? streaming.text : textOf(message)
-  const thought = streaming ? streaming.thought : message.content.filter((b) => b.type === 'thinking').map((b) => b.text).join('')
+  const live = message.status === 'streaming'
+  const blocks = streaming ? streaming.blocks : message.content
   const usage = streaming ? streaming.usage : message.usage
+  const text = textOf({ content: blocks })
   const provider = providers.find((item) => item.id === message.provider)
   const modelName = provider?.models.find((item) => item.id === message.model)?.name ?? message.model
-  const live = message.status === 'streaming'
+  const handover = blocks.find((block) => block.type === 'handover')
+  const parts = pieces(blocks, live)
 
   return (
     <div className="group">
+      {handover && handover.type === 'handover' && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-muted">
+          <span className="h-px flex-1 bg-border" />
+          → {handover.agent} に引き継ぎ（発言{handover.count}件）
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
       <div className="mb-1 flex items-center gap-1.5 text-xs text-muted">
         <span className="font-medium">{modelName}</span>
         {provider && <span>· {provider.label}</span>}
+        {message.agent && message.agent !== message.provider && <span>· {AGENT_LABEL[message.agent] ?? message.agent} 経由</span>}
         {live && <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-label="応答中" />}
       </div>
-      {thought && (
-        <details className="mb-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-muted" open={live && !text}>
-          <summary className="cursor-pointer select-none">思考</summary>
-          <div className="mt-2 whitespace-pre-wrap">{thought}</div>
-        </details>
-      )}
-      {text ? <Markdown text={text} /> : live && !thought ? <p className="text-muted">…</p> : null}
+      <div className="flex flex-col gap-2">
+        {parts.map((part) => <div key={part.key}>{part.node}</div>)}
+        {live && parts.length === 0 && <p className="text-muted">…</p>}
+      </div>
       {message.status === 'error' && message.error && (
         <p className="mt-2 rounded-lg border border-danger/40 px-3 py-2 text-sm text-danger">
           {errorText[message.error.code] ?? errorText.unknown}

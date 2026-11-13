@@ -15,6 +15,7 @@ from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
 from .db import make_engine, mark_interrupted, migrate, session_dependency
+from .agents.opencode import OpenCodeAgent
 from .providers.registry import Registry
 from .runs import RunManager
 
@@ -46,7 +47,8 @@ def mount_web(app: FastAPI, dist: Path) -> None:
         return FileResponse(root / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, registry: Registry | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, registry: Registry | None = None,
+               agents: dict | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -60,6 +62,9 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         for run in list(app.state.runs.runs.values()):
             if run.task and not run.done:
                 run.task.cancel()
+        for agent in app.state.agents.values():
+            if hasattr(agent, "close"):
+                await agent.close()
         engine.dispose()
 
     app = FastAPI(title="OmniLLMWorkspace", version=__version__, lifespan=lifespan,
@@ -67,6 +72,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.state.settings = settings
     app.state.auth = Auth(settings)
     app.state.registry = registry or Registry(settings)
+    app.state.agents = agents if agents is not None else {"opencode": OpenCodeAgent(settings, app.state.registry)}
+    app.state.free_models = {}
     app.state.runs = RunManager()
     # Guards against DNS rebinding and cross-site requests: the app will run agents on this machine.
     app.add_middleware(OriginCheck, allowed_hosts=settings.allowed_hosts())

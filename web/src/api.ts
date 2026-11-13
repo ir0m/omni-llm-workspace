@@ -1,4 +1,24 @@
-export type Block = { type: 'text' | 'thinking'; text: string }
+export type PlanEntry = { content: string; status: 'pending' | 'in_progress' | 'completed'; priority?: string }
+
+export type ToolCall = {
+  type: 'tool_call'
+  id: string
+  title: string
+  kind: string
+  status: string
+  locations?: { path: string }[]
+  command?: string
+  path?: string
+  diff?: string
+  output?: string
+  note?: string
+}
+
+export type Block =
+  | { type: 'text' | 'thinking'; text: string }
+  | ToolCall
+  | { type: 'plan'; entries: PlanEntry[] }
+  | { type: 'handover'; agent: string; count: number }
 
 export type Usage = {
   inputTokens?: number
@@ -8,7 +28,30 @@ export type Usage = {
   reasoningTokens?: number
   costUsd?: number
   contextWindow?: number
+  contextUsed?: number
   stopReason?: string
+}
+
+export type ApprovalMode = 'ask' | 'auto_edit' | 'auto'
+
+export type PermissionAsk = {
+  requestId: string
+  tool_call_id: string
+  kind: string
+  title: string
+  command: string | null
+  paths: string[]
+  diff: string | null
+  outside_project: boolean
+}
+
+export type AppConfig = {
+  approval_default: ApprovalMode
+  approval_max: ApprovalMode
+  allow_shell: boolean
+  shell_deny: string[]
+  allow_opencode_free: boolean
+  allow_claude_subscription: boolean
 }
 
 export type ErrorInfo = { code: string; message: string }
@@ -20,6 +63,7 @@ export type Message = {
   content: Block[]
   provider: string | null
   model: string | null
+  agent: string | null
   status: 'complete' | 'streaming' | 'error' | 'cancelled' | 'interrupted'
   error: ErrorInfo | null
   usage: Usage | null
@@ -40,6 +84,8 @@ export type Conversation = {
   hidden: boolean
   forked_from: string | null
   target: Target | null
+  approval_mode: ApprovalMode | null
+  allow_rules: { kind: string; prefix?: string; outside?: boolean }[]
   created_at: number
   updated_at: number
   active_run: string | null
@@ -80,7 +126,7 @@ export type Project = {
 
 export type ProjectList = { root: string; can_create: boolean; can_clone: boolean; projects: Project[] }
 
-export type Draft = { temporary: boolean; mode: Mode; project: string | null }
+export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null }
 
 export class ApiError extends Error {
   status: number
@@ -122,7 +168,7 @@ export const api = {
     request<Conversation[]>('GET', `/api/conversations?include_hidden=${includeHidden}`),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
-  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode'>> & { project?: string }) =>
+  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode'>> & { project?: string; clear_allow_rules?: boolean }) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   remove: (id: string) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}`),
   fork: (id: string, messageId?: string) =>
@@ -132,6 +178,9 @@ export const api = {
     request<{ run_id: string; user_message: Message; assistant_message: Message }>(
       'POST', `/api/conversations/${id}/messages`, body),
   cancel: (runId: string) => request<{ cancelled: boolean }>('POST', `/api/runs/${runId}/cancel`),
+  answer: (runId: string, requestId: string, outcome: 'allow' | 'allow_always' | 'deny', message?: string) =>
+    request<{ ok: boolean }>('POST', `/api/runs/${runId}/permissions/${requestId}`, { outcome, message: message ?? null }),
+  config: () => request<AppConfig>('GET', '/api/config'),
   executors: (refresh = false) => request<Executor[]>('GET', `/api/executors?refresh=${refresh}`),
   projects: () => request<ProjectList>('GET', '/api/projects'),
   createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
@@ -151,6 +200,6 @@ export const errorText: Record<string, string> = {
   unknown: 'エラーが起きました',
 }
 
-export function textOf(message: Message): string {
-  return message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
+export function textOf(message: Message | { content: Block[] }): string {
+  return message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
 }

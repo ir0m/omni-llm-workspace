@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from ..agents import policy
+from ..agents.base import Decision
+from ..models import Conversation
 from ..runs import RunManager
 
 HEARTBEAT_SECONDS = 15
@@ -56,3 +62,32 @@ def cancel_run(run_id: str, request: Request):
     if run_id not in runs.runs:
         raise HTTPException(status_code=404, detail="run_not_found")
     return {"cancelled": runs.cancel(run_id)}
+
+
+class Answer(BaseModel):
+    outcome: Literal["allow", "allow_always", "deny"]
+    message: str | None = Field(default=None, max_length=4000)
+
+
+@router.post("/{run_id}/permissions/{request_id}")
+async def answer_permission(run_id: str, request_id: str, body: Answer, request: Request):
+    """The user's answer to an agent's permission request. "allow_always" is remembered for the conversation."""
+    state = request.app.state
+    runs: RunManager = state.runs
+    asked = runs.pending_request(run_id, request_id)
+    if asked is None:
+        raise HTTPException(status_code=404, detail="request_not_found")
+    run = runs.runs[run_id]
+    rule = policy.rule_for(asked) if body.outcome == "allow_always" else None
+    if rule is not None:  # compound commands can't be remembered; they are allowed once
+        if rule not in run.rules:
+            run.rules.append(rule)
+
+        def remember() -> None:
+            with state.sessions.begin() as session:
+                conversation = session.get(Conversation, run.conversation_id)
+                if conversation is not None:
+                    conversation.allow_rules = list(run.rules)
+
+        await run_in_threadpool(remember)
+    return {"ok": runs.resolve(run_id, request_id, Decision(body.outcome, body.message))}

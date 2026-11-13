@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ApiError, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
+import { api, ApiError, type AppConfig, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
 import ChatView from './ChatView'
 import Sidebar from './Sidebar'
 
@@ -16,6 +16,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [selected, setSelected] = useState<string | null>(idFromHash)
   const [executors, setExecutors] = useState<Executor[]>([])
   const [projects, setProjects] = useState<ProjectList | null>(null)
+  const [config, setConfig] = useState<AppConfig | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [draft, setDraft] = useState<Draft>(BLANK)
 
@@ -43,6 +44,9 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   }, [handle])
 
   useEffect(refresh, [refresh])
+  useEffect(() => {
+    api.config().then(setConfig).catch(handle)
+  }, [handle])
   useEffect(() => loadExecutors(), [loadExecutors])
   useEffect(() => {
     loadProjects()
@@ -92,6 +96,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         onDraftChange={setDraft}
         executors={executors}
         projects={projects}
+        config={config}
         onProjectsChanged={loadProjects}
         onRefreshExecutors={() => loadExecutors(true)}
         onOpenMenu={() => setDrawerOpen(true)}

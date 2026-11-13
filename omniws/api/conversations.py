@@ -12,11 +12,15 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from .. import projects
+from ..agents import policy
+from ..agents.base import Agent, Turn
+from ..agents.handover import build_prompt
+from ..agents.opencode import FREE, PROVIDER_IDS, OpenCodeAgent
 from ..db import now_ms
 from ..history import chat_history
-from ..models import Conversation, Message
-from ..providers.base import ChatRequest
-from ..runs import RunManager
+from ..models import AgentSession, Conversation, Message
+from ..providers.base import ChatProvider, ChatRequest
+from ..runs import Run, RunManager
 
 TITLE_LENGTH = 40
 router = APIRouter(prefix="/api/conversations")
@@ -31,6 +35,7 @@ def conversation_dict(conversation: Conversation, runs: RunManager) -> dict[str,
     return {"id": conversation.id, "title": conversation.title, "mode": conversation.mode,
             "project": conversation.project, "temporary": conversation.temporary, "pinned": conversation.pinned,
             "hidden": conversation.hidden, "forked_from": conversation.forked_from, "target": conversation.target,
+            "approval_mode": conversation.approval_mode, "allow_rules": conversation.allow_rules or [],
             "created_at": conversation.created_at, "updated_at": conversation.updated_at,
             "active_run": active.id if active else None}
 
@@ -62,6 +67,7 @@ class NewConversation(BaseModel):
     temporary: bool = False
     mode: Literal["chat", "code"] = "chat"
     project: str | None = Field(default=None, max_length=100)
+    approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
 
 
 class ConversationPatch(BaseModel):
@@ -72,6 +78,8 @@ class ConversationPatch(BaseModel):
     mode: Literal["chat", "code"] | None = None
     # A project name, or "" to take the conversation out of its project
     project: str | None = Field(default=None, max_length=100)
+    approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
+    clear_allow_rules: bool = False
 
 
 class Order(BaseModel):
@@ -104,8 +112,10 @@ def list_conversations(request: Request, include_hidden: bool = False, session: 
 def create_conversation(body: NewConversation, request: Request, session: Session = Depends(db)):
     now = now_ms()
     project = check_project(request, body.project)
+    approval = policy.clamp(body.approval_mode, request.app.state.settings) if body.approval_mode else None
     conversation = Conversation(id=str(uuid.uuid4()), title=body.title.strip(), temporary=body.temporary,
-                                mode=body.mode, project=project, sort_key=float(now), created_at=now, updated_at=now)
+                                mode=body.mode, project=project, approval_mode=approval, sort_key=float(now),
+                                created_at=now, updated_at=now)
     session.add(conversation)
     session.commit()
     return conversation_dict(conversation, request.app.state.runs)
@@ -135,6 +145,10 @@ def update_conversation(conversation_id: str, body: ConversationPatch, request: 
                         session: Session = Depends(db)):
     conversation = find(session, conversation_id)
     changes = body.model_dump(exclude_none=True)
+    if changes.pop("clear_allow_rules", False):
+        conversation.allow_rules = []
+    if "approval_mode" in changes:  # never looser than OMNI_APPROVAL_MAX
+        conversation.approval_mode = policy.clamp(changes.pop("approval_mode"), request.app.state.settings)
     if "project" in changes:
         conversation.project = check_project(request, changes.pop("project"))
         if conversation.project is None:
@@ -183,28 +197,54 @@ def fork_conversation(conversation_id: str, body: Fork, request: Request, sessio
 
 @router.post("/{conversation_id}/messages", status_code=202)
 async def send_message(conversation_id: str, body: Send, request: Request):
-    """Stores the user's message and starts the reply in the background. Follow it at /api/runs/{id}/events."""
+    """Stores the user's message and starts the reply in the background. Follow it at /api/runs/{id}/events.
+
+    Chat turns go to the chosen provider. Code turns go to an agent in the conversation's project:
+    OpenCode runs API and local models (and its own free models when allowed)."""
     state = request.app.state
+    settings = state.settings
     runs: RunManager = state.runs
-    provider = state.registry.get(body.provider)
-    if provider is None:
-        raise HTTPException(status_code=400, detail="provider_not_configured")
     if runs.active_for(conversation_id):
         raise HTTPException(status_code=409, detail="reply_in_progress")
-    model = await state.registry.model(body.provider, body.model)
 
-    def prepare() -> tuple[dict, dict, list[dict[str, str]]]:
+    def peek() -> tuple[str, str | None]:
+        with state.sessions() as session:
+            conversation = find(session, conversation_id)
+            return conversation.mode, conversation.project
+
+    mode, project = await run_in_threadpool(peek)
+    provider: ChatProvider | None = None
+    agent: Agent | None = None
+    agent_model = body.model
+    if mode == "chat":
+        provider = state.registry.get(body.provider)
+        if provider is None:
+            raise HTTPException(status_code=400, detail="provider_not_configured")
+    else:
+        if not project or not projects.exists(settings.omni_projects_dir, project):
+            raise HTTPException(status_code=400, detail="project_not_found")
+        opencode: OpenCodeAgent | None = state.agents.get("opencode")
+        if opencode is None or not opencode.installed():
+            raise HTTPException(status_code=400, detail="code_needs_agent")
+        if body.provider == FREE and settings.omni_allow_opencode_free:
+            agent = opencode
+        elif body.provider in PROVIDER_IDS and state.registry.get(body.provider) is not None:
+            agent, agent_model = opencode, OpenCodeAgent.model_ref(body.provider, body.model)
+        else:
+            raise HTTPException(status_code=400, detail="code_needs_agent")
+    model_info = await state.registry.model(body.provider, body.model) if provider else None
+
+    def prepare() -> dict[str, Any]:
         with state.sessions.begin() as session:
             conversation = find(session, conversation_id)
-            if conversation.mode == "code":  # chat providers can't edit files; agents take Code turns
-                raise HTTPException(status_code=400, detail="code_needs_agent")
-            seq = (conversation.messages[-1].seq if conversation.messages else 0) + 1
+            earlier = list(conversation.messages)
+            seq = (earlier[-1].seq if earlier else 0) + 1
             now = now_ms()
             user = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq, role="user",
                            content=[{"type": "text", "text": body.text}], mode=conversation.mode, created_at=now)
             reply = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq + 1, role="assistant",
-                            content=[], provider=body.provider, model=body.model, mode=conversation.mode,
-                            status="streaming", created_at=now)
+                            content=[], provider=body.provider, model=body.model, agent=agent.id if agent else None,
+                            mode=conversation.mode, status="streaming", created_at=now)
             conversation.messages.extend([user, reply])
             if not conversation.title:
                 first_line = body.text.strip().splitlines()[0] if body.text.strip() else ""
@@ -213,17 +253,65 @@ async def send_message(conversation_id: str, body: Send, request: Request):
             conversation.updated_at = now
             conversation.sort_key = max(conversation.sort_key, float(now))
             session.flush()
-            history = chat_history(message for message in conversation.messages if message.id != reply.id)
-            return message_dict(user), message_dict(reply), history
+            prepared: dict[str, Any] = {"user": message_dict(user), "reply": message_dict(reply), "seq": reply.seq,
+                                        "temporary": conversation.temporary, "approval_mode": conversation.approval_mode,
+                                        "rules": list(conversation.allow_rules or [])}
+            if agent is None:
+                prepared["history"] = chat_history(earlier + [user])
+                return prepared
+            record = next((item for item in conversation.agent_sessions if item.agent == agent.id), None)
+            native = record.native_id if record and not conversation.temporary else None
+            unseen = [message for message in earlier if message.seq > record.synced_seq] if native else earlier
+            prepared.update(native=native, count=len(unseen), prompt=build_prompt(unseen, body.text),
+                            fresh_prompt=build_prompt(earlier, body.text))
+            return prepared
 
-    user, reply, history = await run_in_threadpool(prepare)
+    prepared = await run_in_threadpool(prepare)
+    reply_id = prepared["reply"]["id"]
+    native_box = {"id": prepared.get("native")}
 
     def save(status: str, content: list[dict], usage: dict | None, error: dict | None) -> None:
         with state.sessions.begin() as session:
-            message = session.get(Message, reply["id"])
+            message = session.get(Message, reply_id)
             if message is not None:
                 message.status, message.content, message.usage, message.error = status, content, usage, error
+            if agent is None or prepared["temporary"] or not native_box["id"]:
+                return
+            record = session.scalar(select(AgentSession).where(AgentSession.conversation_id == conversation_id,
+                                                               AgentSession.agent == agent.id))
+            if record is None:
+                session.add(AgentSession(conversation_id=conversation_id, agent=agent.id, native_id=native_box["id"],
+                                         synced_seq=prepared["seq"]))
+            else:
+                record.native_id, record.synced_seq = native_box["id"], prepared["seq"]
 
-    chat_request = ChatRequest(model=body.model, messages=history, system=body.system, effort=body.effort)
-    run = runs.start(conversation_id, reply["id"], provider, chat_request, model, save)
-    return {"run_id": run.id, "user_message": user, "assistant_message": reply}
+    if agent is None:
+        chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort)
+
+        def chat_stream(run: Run):
+            return provider.stream(chat_request, model_info)
+
+        run = runs.start(conversation_id, reply_id, chat_stream, save)
+        return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
+
+    rules: list[dict[str, Any]] = prepared["rules"]
+    cwd = projects.project_path(settings.omni_projects_dir, project)
+
+    def decide(permission):
+        return policy.decide(permission, prepared["approval_mode"], rules, settings)
+
+    def on_session(session_id: str) -> None:
+        native_box["id"] = session_id
+
+    async def agent_stream(run: Run):
+        if prepared["count"]:
+            yield {"sessionUpdate": "handover", "agent": agent.label, "count": prepared["count"]}
+        turn = Turn(conversation_id=conversation_id, mode="code", cwd=cwd, model=agent_model, prompt=prepared["prompt"],
+                    fresh_prompt=prepared["fresh_prompt"], native_session=native_box["id"],
+                    temporary=prepared["temporary"], effort=body.effort, ask_permission=run.ask, on_session=on_session)
+        async for update in agent.run(turn):
+            yield update
+
+    run = runs.start(conversation_id, reply_id, agent_stream, save, decide=decide)
+    run.rules = rules
+    return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}

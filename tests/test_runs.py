@@ -106,3 +106,24 @@ def test_executor_overview(client):
     assert overview["anthropic"]["setting"] == "ANTHROPIC_API_KEY"
     assert overview["fake"]["models"][0]["id"] == "m1"
     assert overview["fake"]["modes"] == ["chat"]
+
+
+def test_events_added_while_reading_are_not_skipped():
+    import asyncio
+
+    from omniws.runs import Run, RunManager
+
+    async def scenario():
+        manager = RunManager()
+        run = Run(id="r", conversation_id="c", message_id="m")
+        run.emit("status", {"status": "running"})
+        seen = []
+        async for event_id, _name, data in manager.subscribe(run):
+            seen.append(event_id)
+            if event_id == 1:  # more events arrive while the reader holds the first one
+                run.emit("update", {"n": 2})
+                run.emit("status", {"status": "complete"})
+                run.finished_at = 1.0
+        return seen
+
+    assert asyncio.run(scenario()) == [1, 2, 3]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,8 +53,17 @@ class Settings(BaseSettings):
     omni_models_ollama: str = ""
     omni_models_local: str = ""
 
-    # Subscriptions (P2) use each official CLI's own login. The app never stores those credentials:
+    # Subscriptions use each official CLI's own login. The app never stores those credentials:
     # Anthropic does not allow third-party apps to collect or intermediate Claude.ai credentials.
+    omni_allow_claude_subscription: bool = False
+    # OpenCode's free models run on OpenCode's service: code is sent there
+    omni_allow_opencode_free: bool = False
+
+    # Permissions for Code mode. .env is the upper limit; conversations can only be stricter.
+    omni_approval_default: Literal["ask", "auto_edit", "auto"] = "auto_edit"
+    omni_approval_max: Literal["ask", "auto_edit", "auto"] = "auto"
+    omni_allow_shell: bool = True
+    omni_shell_deny: str = "sudo,su,rm -rf /,rm -rf ~,mkfs,shutdown,reboot,git push --force,git push -f"
 
     @field_validator("omni_data_dir", "omni_projects_dir", mode="before")
     @classmethod
@@ -69,6 +79,9 @@ class Settings(BaseSettings):
     def enabled_providers(self) -> set[str] | None:
         names = {name.strip().lower() for name in self.omni_providers.split(",") if name.strip()}
         return names or None
+
+    def shell_deny(self) -> list[str]:
+        return [pattern.strip() for pattern in self.omni_shell_deny.split(",") if pattern.strip()]
 
     def fixed_models(self, provider: str) -> list[str]:
         value = getattr(self, f"omni_models_{provider}", "") or ""
