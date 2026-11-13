@@ -9,3 +9,8 @@ web/dist/
 *.tsbuildinfo
 .DS_Store
 ._*
+
+# Working notes for agents and development plans stay local
+AGENTS.md
+CLAUDE.md
+docs/

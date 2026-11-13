@@ -20,7 +20,7 @@ def passkey_link(minutes: int) -> None:
     settings = get_settings()
     origins = settings.public_origins()
     if not origins:
-        raise SystemExit("OMNI_PUBLIC_URLS を .env に書いてください（例: https://myserver.tail1234.ts.net:10000）")
+        raise SystemExit("OMNI_PUBLIC_URLS を .env に書いてください（例: https://myserver.tail1234.ts.net）")
     engine = make_engine(settings.omni_data_dir)
     migrate(engine)
     token = create_enroll_token(sessionmaker(engine), minutes)

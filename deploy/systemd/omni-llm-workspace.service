@@ -1,16 +1,17 @@
 # OmniLLMWorkspace as a systemd user service (no root needed).
 #   cp deploy/systemd/omni-llm-workspace.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now omni-llm-workspace
+# Change WorkingDirectory and ExecStart to where you cloned the repository.
 # Settings come from .env in the repository. Logs: journalctl --user -u omni-llm-workspace
 [Unit]
 Description=OmniLLMWorkspace
 After=network-online.target
 
 [Service]
-WorkingDirectory=%h/dev/OmniLLMWorkspace
+WorkingDirectory=%h/omni-llm-workspace
 # The agents' CLIs (codex, claude, opencode) live in ~/.local/bin
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/dev/OmniLLMWorkspace/.venv/bin/python -m omniws
+ExecStart=%h/omni-llm-workspace/.venv/bin/python -m omniws
 Restart=on-failure
 RestartSec=5
 UMask=0077
