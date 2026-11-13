@@ -221,6 +221,62 @@ class CodexAgent:
         self.models_cache = models
         return models
 
+    async def list_sessions(self, cwd: Path):
+        from .session_history import SessionInfo
+
+        connection = await self.connect()
+        found = {}
+        # The registered project can be a symlink, while the CLI records the real path.
+        for directory in dict.fromkeys([str(cwd), str(cwd.resolve())]):
+            cursor = None
+            while True:
+                result = await connection.call("thread/list", {
+                    "cwd": directory, "limit": 100, "cursor": cursor, "sortKey": "updated_at",
+                    "sourceKinds": ["cli", "vscode", "exec", "appServer"], "modelProviders": [],
+                }, timeout=30)
+                for item in result.get("data") or []:
+                    if item.get("ephemeral") or Path(item.get("cwd", "/")).resolve() != cwd.resolve():
+                        continue
+                    found[item["id"]] = SessionInfo(item["id"], item.get("name") or item.get("preview") or "無題",
+                        item["cwd"], item.get("createdAt", 0) * 1000, item.get("updatedAt", 0) * 1000,
+                        item.get("model"))
+                next_cursor = result.get("nextCursor")
+                if not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+        return list(found.values())
+
+    async def session_history(self, native_id: str, cwd: Path):
+        from .session_history import codex_history
+
+        connection = await self.connect()
+        result = await connection.call("thread/read", {"threadId": native_id}, timeout=30)
+        thread = result["thread"]
+        if Path(thread["cwd"]).resolve() != cwd.resolve():
+            raise ProviderError("bad_request", "セッションの作業フォルダがプロジェクトと一致しません")
+        turns, cursor = [], None
+        while True:
+            try:
+                page = await connection.call("thread/turns/list", {"threadId": native_id, "limit": 100,
+                    "cursor": cursor, "sortDirection": "asc", "itemsView": "full"}, timeout=30)
+            except RpcError as exc:
+                if exc.code != -32601:
+                    raise
+                legacy = await connection.call("thread/read", {"threadId": native_id, "includeTurns": True}, timeout=30)
+                turns = legacy["thread"].get("turns") or []
+                break
+            turns.extend(page.get("data") or [])
+            next_cursor = page.get("nextCursor")
+            if not next_cursor:
+                break
+            if next_cursor == cursor:
+                raise ProviderError("bad_request", "履歴の続きを取得できませんでした")
+            cursor = next_cursor
+        thread["turns"] = turns
+        if any(turn.get("itemsView", "full") != "full" for turn in turns):
+            raise ProviderError("bad_request", "このセッションの履歴を完全に取得できませんでした")
+        return codex_history(thread, cwd)
+
     def thread_settings(self, turn: Turn) -> dict[str, Any]:
         config: dict[str, Any] = {}
         if turn.mode == "chat":
@@ -240,6 +296,13 @@ class CodexAgent:
         settings = self.thread_settings(turn)
         setup = (turn.mode, str(turn.cwd))
         loaded = self.open_threads.get(turn.native_session or "")
+        if turn.require_resume:
+            try:
+                await connection.call("thread/resume", {"threadId": turn.native_session, **settings}, timeout=60)
+            except RpcError as exc:
+                raise ProviderError("not_found", "元のセッションを再開できませんでした") from exc
+            self.open_threads[turn.native_session] = setup
+            return turn.native_session, turn.unseen
         if loaded == setup:
             return turn.native_session, turn.unseen
         # A thread set up for another mode or folder (Chat -> Code) is not reused: its sandbox would be wrong
@@ -295,6 +358,22 @@ class CodexAgent:
         raise RpcError(-32601, f"not supported: {method}")
 
     async def run(self, turn: Turn) -> AsyncIterator[Update]:
+        if turn.require_resume:
+            # A fresh process resumes from disk, including work done in the CLI since the last app turn.
+            # Closing it also avoids keeping a second, stale in-memory copy of the original session.
+            dedicated = CodexAgent(self.settings, executable=self.executable)
+            try:
+                async for update in dedicated._run(turn):
+                    yield update
+            finally:
+                if dedicated.account:
+                    self.account, self.limits, self.account_at = dedicated.account, dedicated.limits, dedicated.account_at
+                await dedicated.close()
+        else:
+            async for update in self._run(turn):
+                yield update
+
+    async def _run(self, turn: Turn) -> AsyncIterator[Update]:
         connection = await self.connect()
         thread_id, inject = await self.thread(connection, turn)
         items: dict[str, dict[str, Any]] = {}
@@ -313,6 +392,8 @@ class CodexAgent:
             except RpcError as exc:
                 raise ProviderError("bad_request", exc.message) from exc
             turn_id = (started or {}).get("turn", {}).get("id")
+            if turn_id and turn.on_turn_id:
+                turn.on_turn_id(turn_id)
             outputs: dict[str, str] = {}
             streamed: set[str] = set()
             failure: dict[str, Any] | None = None

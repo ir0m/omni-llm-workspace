@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type AppConfig, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
 import ChatView from './ChatView'
 import Sidebar from './Sidebar'
@@ -19,11 +19,15 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [draft, setDraft] = useState<Draft>(BLANK)
+  const [error, setError] = useState<string | null>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const discoveringRef = useRef(false)
+  const lastDiscovery = useRef(0)
 
   const handle = useCallback(
     (error: unknown) => {
       if (error instanceof ApiError && error.status === 401) onSignedOut()
-      else console.error(error)
+      else setError(error instanceof Error ? error.message : '処理に失敗しました')
     },
     [onSignedOut],
   )
@@ -31,6 +35,27 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const refresh = useCallback(() => {
     api.conversations(includeHidden).then(setConversations).catch(handle)
   }, [includeHidden, handle])
+
+  const discover = useCallback((force = false) => {
+    if (discoveringRef.current || (!force && Date.now() - lastDiscovery.current < 60_000)) return
+    discoveringRef.current = true
+    setDiscovering(true)
+    api.discoverSessions().then((result) => {
+      lastDiscovery.current = Date.now()
+      if (result.errors.length) setError(result.errors.join('／'))
+      refresh()
+    }).catch(handle).finally(() => {
+      discoveringRef.current = false
+      setDiscovering(false)
+    })
+  }, [refresh, handle])
+
+  useEffect(() => {
+    discover()
+    const focus = () => discover()
+    window.addEventListener('focus', focus)
+    return () => window.removeEventListener('focus', focus)
+  }, [discover])
 
   const loadExecutors = useCallback(
     (force = false) => {
@@ -75,6 +100,10 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
 
   return (
     <div className="flex h-full overflow-hidden">
+      {error && <div role="alert" className="fixed inset-x-3 top-3 z-[70] mx-auto flex max-w-xl items-start gap-3 rounded-xl border border-danger bg-bg p-3 text-sm shadow-lg">
+        <span className="flex-1 whitespace-pre-wrap">{error}</span>
+        <button onClick={() => setError(null)} className="shrink-0 text-muted">閉じる</button>
+      </div>}
       <Sidebar
         conversations={conversations}
         projects={projects}
@@ -86,6 +115,8 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         onSelect={select}
         onNew={startNew}
         onChanged={refresh}
+        onRefresh={() => { setError(null); refresh(); discover(true) }}
+        refreshing={discovering}
         onError={handle}
         onSignOut={() => api.logout().finally(onSignedOut)}
       />

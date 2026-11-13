@@ -57,6 +57,8 @@ class Message(Base):
     # The usage_update of the turn (camelCase, as in the event)
     usage: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    # Imported history already known to this native session.
+    native_origin: Mapped[dict[str, str] | None] = mapped_column(JSON, default=None)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
@@ -75,6 +77,24 @@ class AgentSession(Base):
     synced_seq: Mapped[int] = mapped_column(Integer, default=0)
     ephemeral: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+
+
+class ExternalSession(Base):
+    """An indexed CLI session. A null conversation is a tombstone after local deletion."""
+
+    __tablename__ = "external_sessions"
+    __table_args__ = (UniqueConstraint("family", "native_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    family: Mapped[str] = mapped_column(String(40))
+    agent: Mapped[str] = mapped_column(String(40))
+    native_id: Mapped[str] = mapped_column(String(200))
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True)
+    project: Mapped[str] = mapped_column(String(200))
+    cwd: Mapped[str] = mapped_column(Text)
+    turns: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    pending: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
 
 class AppSetting(Base):

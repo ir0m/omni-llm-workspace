@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
-  Pin, PinOff, Plus, Search, Timer, Trash2, X,
+  Pin, PinOff, Plus, RefreshCw, Search, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
 import PasskeyDialog from './PasskeyDialog'
@@ -60,6 +60,8 @@ type Props = {
   onSelect: (id: string | null) => void
   onNew: (draft: Draft) => void
   onChanged: () => void
+  onRefresh: () => void
+  refreshing: boolean
   onError: (error: unknown) => void
   onSignOut: () => void
 }
@@ -116,11 +118,15 @@ export default function Sidebar(props: Props) {
             <X className="size-4" aria-hidden />
           </button>
         </div>
-        <div className="px-3 pb-2">
-          <label className="flex items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1.5">
+        <div className="flex items-center gap-2 px-3 pb-2">
+          <label className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1.5">
             <Search className="size-4 text-muted" aria-hidden />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="検索" className="w-full bg-transparent text-sm outline-none" />
           </label>
+          <button onClick={props.onRefresh} disabled={props.refreshing} aria-label="会話一覧を更新" title="会話一覧を更新"
+            className="rounded-lg p-2 text-muted hover:text-fg disabled:opacity-50">
+            <RefreshCw className={`size-4 ${props.refreshing ? 'animate-spin' : ''}`} aria-hidden />
+          </button>
         </div>
         <nav className="flex-1 overflow-y-auto px-2 pb-2">
           {groups.map((group) => {

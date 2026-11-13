@@ -58,6 +58,8 @@ class Turn:
     effort: str | None
     ask_permission: AskPermission
     on_session: Callable[[str], None]  # called with the agent's session id once known
+    require_resume: bool = False  # imported sessions must never silently become a different session
+    on_turn_id: Callable[[str], None] | None = None
 
 
 class Agent(Protocol):

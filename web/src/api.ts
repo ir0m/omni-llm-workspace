@@ -97,7 +97,7 @@ export type Conversation = {
   active_run: string | null
 }
 
-export type ConversationDetail = Conversation & { messages: Message[] }
+export type ConversationDetail = Conversation & { messages: Message[]; sync_error?: string | null }
 
 export type ModelInfo = {
   id: string
@@ -192,6 +192,7 @@ export const api = {
   logout: () => request<{ ok: boolean }>('POST', '/api/auth/logout'),
   conversations: (includeHidden: boolean) =>
     request<Conversation[]>('GET', `/api/conversations?include_hidden=${includeHidden}`),
+  discoverSessions: () => request<{ added: number; errors: string[] }>('POST', '/api/sessions/discover'),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
   update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode'>> & { project?: string; clear_allow_rules?: boolean }) =>

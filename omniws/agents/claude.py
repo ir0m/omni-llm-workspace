@@ -192,6 +192,23 @@ class ClaudeCodeAgent:
                                     extra={"resolved": item.get("resolvedModel")}))
         return models
 
+    async def list_sessions(self, cwd: Path):
+        from .session_history import SessionInfo
+
+        items = await asyncio.to_thread(sdk.list_sessions, directory=str(cwd.resolve()), include_worktrees=False)
+        return [SessionInfo(item.session_id, item.custom_title or item.summary or "無題", item.cwd or str(cwd),
+                            item.created_at or item.last_modified, item.last_modified)
+                for item in items if not item.cwd or Path(item.cwd).resolve() == cwd.resolve()]
+
+    async def session_history(self, native_id: str, cwd: Path):
+        from .session_history import claude_history
+
+        sessions = await self.list_sessions(cwd)
+        if not any(item.id == native_id for item in sessions):
+            raise ProviderError("not_found", "元のセッションが見つかりません")
+        messages = await asyncio.to_thread(sdk.get_session_messages, native_id, directory=str(cwd.resolve()))
+        return claude_history(messages, cwd)
+
     def usage(self) -> dict[str, Any] | None:
         """The last rate-limit windows Claude Code reported, and when (they only arrive during turns)."""
         try:
@@ -263,6 +280,8 @@ class ClaudeCodeAgent:
             async for update in self._run(turn, resume):
                 yield update
         except _ResumeFailed:
+            if turn.require_resume:
+                raise ProviderError("not_found", "元のセッションを再開できませんでした")
             async for update in self._run(turn, None):  # the session is gone: start over with the whole conversation
                 yield update
 
@@ -275,6 +294,9 @@ class ClaudeCodeAgent:
                 result = None
                 async for message in client.receive_response():
                     started = True
+                    if isinstance(message, sdk.AssistantMessage) and not message.parent_tool_use_id \
+                            and message.uuid and turn.on_turn_id:
+                        turn.on_turn_id(message.uuid)
                     for update in self.updates(message, turn):
                         yield update
                     if isinstance(message, sdk.ResultMessage):

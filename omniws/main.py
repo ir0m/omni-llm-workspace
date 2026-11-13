@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
-from .api import conversations, executors, projects, runs
+from .api import conversations, executors, projects, runs, sessions
 from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
@@ -20,6 +20,7 @@ from .agents.codex import CodexAgent
 from .agents.opencode import OpenCodeAgent
 from .providers.registry import Registry
 from .runs import RunManager
+from .external_sessions import ExternalSessions
 
 WEB_DIST = ROOT / "web" / "dist"
 
@@ -80,13 +81,14 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         "claude_code": ClaudeCodeAgent(settings, "subscription"), "claude_code_api": ClaudeCodeAgent(settings, "api")}
     app.state.free_models = {}
     app.state.runs = RunManager()
+    app.state.external_sessions = ExternalSessions(app.state)
     # Guards against DNS rebinding and cross-site requests: the app will run agents on this machine.
     app.add_middleware(OriginCheck, allowed_hosts=settings.allowed_hosts())
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts())
     app.include_router(health)
     app.include_router(auth_router)
     signed_in = [Depends(require_user)]
-    for router in (conversations.router, runs.router, executors.router, projects.router):
+    for router in (conversations.router, runs.router, executors.router, projects.router, sessions.router):
         app.include_router(router, dependencies=signed_in)
     mount_web(app, web_dist)
     return app

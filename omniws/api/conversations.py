@@ -18,7 +18,8 @@ from ..agents.handover import build_prompt, turn_items
 from ..agents.opencode import FREE, PROVIDER_IDS, OpenCodeAgent
 from ..db import now_ms
 from ..history import chat_history
-from ..models import AgentSession, Conversation, Message
+from ..models import AgentSession, Conversation, ExternalSession, Message
+from ..external_sessions import origin, remember_deleted
 from ..providers.base import ChatProvider, ChatRequest
 from ..runs import Run, RunManager
 
@@ -136,10 +137,16 @@ def reorder(body: Order, session: Session = Depends(db)):
 
 
 @router.get("/{conversation_id}")
-def get_conversation(conversation_id: str, request: Request, session: Session = Depends(db)):
-    conversation = find(session, conversation_id)
-    return {**conversation_dict(conversation, request.app.state.runs),
-            "messages": [message_dict(message) for message in conversation.messages]}
+async def get_conversation(conversation_id: str, request: Request):
+    state = request.app.state
+    async with state.external_sessions.lock:
+        error = await state.external_sessions.sync(conversation_id)
+        def read():
+            with state.sessions() as session:
+                conversation = find(session, conversation_id)
+                return {**conversation_dict(conversation, state.runs), "sync_error": error,
+                        "messages": [message_dict(message) for message in conversation.messages]}
+        return await run_in_threadpool(read)
 
 
 @router.patch("/{conversation_id}")
@@ -169,6 +176,7 @@ def delete_conversation(conversation_id: str, request: Request, session: Session
     active = runs.active_for(conversation_id)
     if active:
         runs.cancel(active.id)
+    remember_deleted(session, conversation, request.app.state.settings.omni_projects_dir)
     session.delete(conversation)
     session.commit()
     return {"ok": True}
@@ -199,6 +207,12 @@ def fork_conversation(conversation_id: str, body: Fork, request: Request, sessio
 
 @router.post("/{conversation_id}/messages", status_code=202)
 async def send_message(conversation_id: str, body: Send, request: Request):
+    async with request.app.state.external_sessions.lock:
+        await request.app.state.external_sessions.sync(conversation_id, sending=True)
+        return await _send_message(conversation_id, body, request)
+
+
+async def _send_message(conversation_id: str, body: Send, request: Request):
     """Stores the user's message and starts the reply in the background. Follow it at /api/runs/{id}/events.
 
     Chat turns go to the chosen provider. Code turns go to an agent in the conversation's project:
@@ -267,21 +281,44 @@ async def send_message(conversation_id: str, body: Send, request: Request):
                 return prepared
             record = next((item for item in conversation.agent_sessions if item.agent == agent.id), None)
             native = record.native_id if record and not conversation.temporary else None
-            unseen = [message for message in earlier if message.seq > record.synced_seq] if native else earlier
+            unseen = [message for message in earlier if message.seq > record.synced_seq
+                      and message.native_origin != origin(agent.id, native)] if native else earlier
             prepared.update(native=native, count=len(unseen), prompt=build_prompt(unseen, body.text),
                             fresh_prompt=build_prompt(earlier, body.text), unseen=turn_items(unseen),
                             earlier=turn_items(earlier))
+            external = session.scalar(select(ExternalSession).where(
+                ExternalSession.conversation_id == conversation.id, ExternalSession.agent == agent.id,
+                ExternalSession.native_id == native)) if native else None
+            prepared["require_resume"] = bool(external and conversation.mode == "code"
+                                                and conversation.project == external.project)
+            if prepared["require_resume"]:
+                external.pending = [*external.pending, {
+                    "text": body.text if agent.id == "codex" else prepared["prompt"],
+                    "user": user.id, "assistant": reply.id}]
             return prepared
 
     prepared = await run_in_threadpool(prepare)
     reply_id = prepared["reply"]["id"]
-    native_box = {"id": prepared.get("native")}
+    native_box = {"id": prepared.get("native"), "turn": None}
 
     def save(status: str, content: list[dict], usage: dict | None, error: dict | None) -> None:
         with state.sessions.begin() as session:
             message = session.get(Message, reply_id)
             if message is not None:
                 message.status, message.content, message.usage, message.error = status, content, usage, error
+            if prepared.get("require_resume"):
+                external = session.scalar(select(ExternalSession).where(
+                    ExternalSession.conversation_id == conversation_id, ExternalSession.agent == agent.id))
+                if external:
+                    pending = []
+                    for item in external.pending:
+                        if item["assistant"] == reply_id:
+                            if native_box["turn"]:
+                                item = {**item, "native_turn": native_box["turn"]}
+                            elif agent.id == "codex":
+                                continue  # turn/start failed: there is no native turn to reconcile
+                        pending.append(item)
+                    external.pending = pending
             if agent is None or prepared["temporary"] or not native_box["id"]:
                 return
             record = session.scalar(select(AgentSession).where(AgentSession.conversation_id == conversation_id,
@@ -314,13 +351,17 @@ async def send_message(conversation_id: str, body: Send, request: Request):
     def on_session(session_id: str) -> None:
         native_box["id"] = session_id
 
+    def on_turn_id(turn_id: str) -> None:
+        native_box["turn"] = turn_id
+
     async def agent_stream(run: Run):
         if prepared["count"]:
             yield {"sessionUpdate": "handover", "agent": agent.label, "count": prepared["count"]}
         turn = Turn(conversation_id=conversation_id, mode=mode, cwd=cwd, model=agent_model, text=body.text,
                     prompt=prepared["prompt"], fresh_prompt=prepared["fresh_prompt"], unseen=prepared["unseen"],
                     earlier=prepared["earlier"], native_session=native_box["id"], temporary=prepared["temporary"],
-                    effort=body.effort, ask_permission=run.ask, on_session=on_session)
+                    effort=body.effort, ask_permission=run.ask, on_session=on_session,
+                    require_resume=prepared.get("require_resume", False), on_turn_id=on_turn_id)
         async for update in agent.run(turn):
             yield update
 

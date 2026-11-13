@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, Menu, Square, Timer } from 'lucide-react'
+import { ArrowUp, Menu, RefreshCw, Square, Timer } from 'lucide-react'
 import {
   api, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
   type PermissionAsk, type ProjectList, type Target, type Usage,
@@ -157,9 +157,23 @@ export default function ChatView(props: Props) {
   // Start from the conversation's last choice, else the last choice in this mode, else the first usable one
   useEffect(() => {
     if (target) return
-    const initial = detail?.target ?? savedTarget(mode) ?? firstTarget(executors, mode)
+    if (conversationId && !detail) return
+    let initial = detail?.target ?? savedTarget(mode) ?? firstTarget(executors, mode)
+    if (initial && !initial.model) {
+      const model = executors.find((item) => item.id === initial?.provider)?.models[0]?.id
+      if (!model) return
+      initial = { ...initial, model }
+    }
     if (initial) setTarget(initial)
-  }, [detail, executors, target, mode])
+  }, [conversationId, detail, executors, target, mode])
+
+  useEffect(() => {
+    const focus = () => {
+      if (conversationId && !live && !sending) load(conversationId).catch(onError)
+    }
+    window.addEventListener('focus', focus)
+    return () => window.removeEventListener('focus', focus)
+  }, [conversationId, live, sending, load, onError])
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -199,7 +213,9 @@ export default function ChatView(props: Props) {
   }
 
   const executor = executors.find((item) => item.id === target?.provider)
-  const blocked = mode === 'code' && !project ? 'プロジェクトを選んでください'
+  const blocked = detail?.sync_error ? detail.sync_error
+    : conversationId && !detail ? '会話を読み込んでいます'
+    : mode === 'code' && !project ? 'プロジェクトを選んでください'
     : executor && !usable(executor, mode) ? (mode === 'code' ? 'この実行元は Code で使えません' : 'この実行元は Chat で使えません')
     : null
 
@@ -321,6 +337,11 @@ export default function ChatView(props: Props) {
             <Menu className="size-5" aria-hidden />
           </button>
           <h1 className="min-w-0 truncate text-sm font-medium">{detail?.title || (mode === 'code' ? '新しいCode' : '新しいチャット')}</h1>
+          {conversationId && <button onClick={() => load(conversationId).catch(onError)} disabled={!!live || sending}
+            className="shrink-0 rounded-lg p-1.5 text-muted hover:text-fg disabled:opacity-40"
+            aria-label="会話を更新" title="会話を更新">
+            <RefreshCw className="size-4" aria-hidden />
+          </button>}
           {temporary && (
             <span className="flex shrink-0 items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn" title="アプリには保存します。エージェント側には記録やメモリを残しません">
               <Timer className="size-3" aria-hidden /> 一時
