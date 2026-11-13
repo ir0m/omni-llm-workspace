@@ -40,9 +40,18 @@ class Settings(BaseSettings):
     local_openai_base_url: str | None = None
     local_openai_api_key: SecretStr | None = None
 
-    # Subscriptions through the official CLIs
-    claude_code_oauth_token: SecretStr | None = None
-    codex_auth_json_b64: SecretStr | None = None
+    # Which providers to offer, comma separated (empty: every provider that is configured)
+    omni_providers: str = ""
+    # Fixed model lists, comma separated (empty: ask the provider)
+    omni_models_anthropic: str = ""
+    omni_models_openai: str = ""
+    omni_models_gemini: str = ""
+    omni_models_openrouter: str = ""
+    omni_models_ollama: str = ""
+    omni_models_local: str = ""
+
+    # Subscriptions (P2) use each official CLI's own login. The app never stores those credentials:
+    # Anthropic does not allow third-party apps to collect or intermediate Claude.ai credentials.
 
     @field_validator("omni_data_dir", "omni_projects_dir", mode="before")
     @classmethod
@@ -54,6 +63,14 @@ class Settings(BaseSettings):
         if any("*" in host for host in extra):
             raise ValueError("OMNI_ALLOWED_HOSTS accepts exact host names only")
         return list(dict.fromkeys([*DEFAULT_ALLOWED_HOSTS, *extra]))
+
+    def enabled_providers(self) -> set[str] | None:
+        names = {name.strip().lower() for name in self.omni_providers.split(",") if name.strip()}
+        return names or None
+
+    def fixed_models(self, provider: str) -> list[str]:
+        value = getattr(self, f"omni_models_{provider}", "") or ""
+        return [model.strip() for model in value.split(",") if model.strip()]
 
 
 @lru_cache
