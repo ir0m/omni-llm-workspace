@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Colors are tokens so light and dark share one set of class names (bg-surface, text-muted, ...). */
+@theme {
+  --color-bg: #ffffff;
+  --color-surface: #f6f7f9;
+  --color-raised: #eceef2;
+  --color-border: #e3e5ea;
+  --color-fg: #14161b;
+  --color-muted: #5f6573;
+  --color-accent: #4f46e5;
+  --color-accent-fg: #ffffff;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-danger: #b91c1c;
+  --font-sans: "Inter", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0b0d12;
+    --color-surface: #12151c;
+    --color-raised: #1a1e27;
+    --color-border: #262b36;
+    --color-fg: #e7e9ee;
+    --color-muted: #9097a5;
+    --color-accent: #818cf8;
+    --color-accent-fg: #0b0d12;
+    --color-ok: #4ade80;
+    --color-warn: #fbbf24;
+    --color-danger: #f87171;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}

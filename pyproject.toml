@@ -1,0 +1,21 @@
+[project]
+name = "omni-llm-workspace"
+version = "0.1.0"
+description = "A self-hosted workspace to chat and code with API, subscription and local LLMs"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+  "fastapi>=0.162,<1",
+  "pydantic-settings>=2.16,<3",
+  "uvicorn>=0.54,<1",
+]
+
+[dependency-groups]
+dev = ["httpx2>=2.16,<3", "pytest>=9,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false
