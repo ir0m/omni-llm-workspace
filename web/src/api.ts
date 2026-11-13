@@ -17,7 +17,7 @@ export type ToolCall = {
 }
 
 export type Block =
-  | { type: 'text' | 'thinking'; text: string }
+  | { type: 'text' | 'thinking' | 'user_input'; text: string }
   | ToolCall
   | { type: 'plan'; entries: PlanEntry[] }
   | { type: 'handover'; agent: string; count: number }
@@ -99,7 +99,8 @@ export type Conversation = {
   active_run: string | null
 }
 
-export type ConversationDetail = Conversation & { messages: Message[]; sync_error?: string | null }
+export type PendingInput = { id: string; run_id: string; text: string; status: 'queued' | 'returned' }
+export type ConversationDetail = Conversation & { messages: Message[]; sync_error?: string | null; pending_inputs?: PendingInput[] }
 
 export type ModelInfo = {
   id: string
@@ -308,6 +309,10 @@ export const api = {
     request<{ run_id: string; user_message: Message; assistant_message: Message }>(
       'POST', `/api/conversations/${id}/messages`, body),
   cancel: (runId: string) => request<{ cancelled: boolean }>('POST', `/api/runs/${runId}/cancel`),
+  input: (runId: string, id: string, text: string) =>
+    request<{ id: string; status: 'delivered' | 'queued' | 'returned' }>('POST', `/api/runs/${runId}/input`, { id, text }),
+  removeInput: (conversationId: string, id: string) =>
+    request<{ ok: boolean; removed: boolean }>('DELETE', `/api/conversations/${conversationId}/inputs/${id}`),
   answer: (runId: string, requestId: string, outcome: 'allow' | 'allow_always' | 'deny', message?: string) =>
     request<{ ok: boolean }>('POST', `/api/runs/${runId}/permissions/${requestId}`, { outcome, message: message ?? null }),
   config: () => request<AppConfig>('GET', '/api/config'),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer } from 'lucide-react'
+import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer, X } from 'lucide-react'
 import {
   api, ApiError, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
   type PermissionAsk, type ProjectList, type Target, type Usage,
@@ -103,6 +103,9 @@ export default function ChatView(props: Props) {
   const source = useRef<EventSource | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  const inputRequest = useRef<{ runId: string; id: string; text: string } | null>(null)
+  const restored = useRef(new Set<string>())
+  const canInput = config?.capabilities?.includes('run_input') ?? false
 
   const mode: Mode = detail ? detail.mode : props.draft.mode
   const project = detail ? detail.project : props.draft.project
@@ -141,10 +144,17 @@ export default function ChatView(props: Props) {
         const { requestId } = JSON.parse((event as MessageEvent).data)
         change((current) => ({ ...current, permissions: current.permissions.filter((item) => item.requestId !== requestId) }))
       })
+      events.addEventListener('input_changed', () => {
+        if (conversationId) load(conversationId).catch(onError)
+      })
       const finish = () => {
         events.close()
         if (source.current === events) source.current = null
-        if (conversationId) load(conversationId).finally(() => setLive(null)).catch(onError)
+        if (conversationId) load(conversationId).then((data) => {
+          const streaming = data.messages.findLast((message) => message.status === 'streaming')
+          if (data.active_run && streaming) follow(data.active_run, streaming.id)
+          else setLive(null)
+        }).catch(onError)
         else setLive(null)
         onChanged()
         props.onRunFinished()  // usage windows move after every turn
@@ -182,6 +192,32 @@ export default function ChatView(props: Props) {
       })
     return () => source.current?.close()
   }, [conversationId, load, follow, onError, onSelect])
+
+  // Persist the recovered text before acknowledging it, including when the screen was closed at completion.
+  useEffect(() => {
+    if (!conversationId || sending) return
+    const returned = detail?.pending_inputs?.filter((item) => item.status === 'returned') ?? []
+    for (const item of returned) {
+      const key = `${INPUT}.restored.${item.id}`
+      let saved = false
+      try { saved = localStorage.getItem(key) === '1' } catch { /* storage disabled */ }
+      if (!restored.current.has(item.id) && !saved) {
+        restored.current.add(item.id)
+        setInput((current) => {
+          const next = current ? `${current}\n\n${item.text}` : item.text
+          writeInput(conversationId, next)
+          try { localStorage.setItem(key, '1') } catch { /* storage disabled */ }
+          return next
+        })
+      }
+      api.removeInput(conversationId, item.id).then(() => {
+        try { localStorage.removeItem(key) } catch { /* storage disabled */ }
+        setDetail((current) => current ? {
+          ...current, pending_inputs: current.pending_inputs?.filter((entry) => entry.id !== item.id),
+        } : current)
+      }).catch(onError)
+    }
+  }, [conversationId, detail?.pending_inputs, onError, sending])
 
   // Start from the conversation's last choice, else the last choice in this mode, else the first usable one
   useEffect(() => {
@@ -252,10 +288,22 @@ export default function ChatView(props: Props) {
     : null
 
   const sendText = useCallback(async (text: string) => {
-    if (!text || !target || sending || live || blocked) return
+    if (!text || !target || sending || blocked || (live && !canInput)) return
     setSending(true)
     if (mode === 'code') askToNotify()
     try {
+      if (live) {
+        const previous = inputRequest.current
+        const attempt = previous?.runId === live.runId && previous.text === text ? previous
+          : { runId: live.runId, id: crypto.randomUUID(), text }
+        inputRequest.current = attempt
+        const result = await api.input(live.runId, attempt.id, text)
+        inputRequest.current = null
+        setInput((current) => current.trim() === text ? '' : current)
+        if (result.status === 'returned') onError(new Error('追加指示の送信結果を確認できません。入力欄に戻します。履歴を確認してから再送してください。'))
+        if (conversationId) await load(conversationId)
+        return
+      }
       let id = conversationId
       if (!id) id = (await api.create(props.draft)).id
       const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort })
@@ -276,7 +324,7 @@ export default function ChatView(props: Props) {
     } finally {
       setSending(false)
     }
-  }, [target, sending, live, blocked, mode, conversationId, props, follow, onChanged, onError])
+  }, [target, sending, live, blocked, mode, conversationId, props, follow, onChanged, onError, canInput, load])
 
   // After "deny with a reason" stopped the turn, the reason becomes the next message
   useEffect(() => {
@@ -327,7 +375,7 @@ export default function ChatView(props: Props) {
   const rules = detail?.allow_rules ?? []
 
   const controls = (
-    <>
+    <fieldset disabled={!!live || sending} className="flex min-w-0 items-center gap-2 disabled:opacity-60">
       <ModeToggle mode={mode} onChange={changeMode} />
       {mode === 'code' && (
         <ProjectPicker
@@ -359,7 +407,7 @@ export default function ChatView(props: Props) {
           {rules.length > 0 && <option value="__clear">「常に許可」の記憶を消す（{rules.length}件）</option>}
         </select>
       )}
-    </>
+    </fieldset>
   )
 
   return (
@@ -468,6 +516,21 @@ export default function ChatView(props: Props) {
           </div>
         )}
         {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
+        {!!detail?.pending_inputs?.some((item) => item.status === 'queued') && (
+          <div className="mx-auto mb-2 max-h-28 max-w-3xl overflow-y-auto rounded-xl border border-border px-3 py-2 text-sm">
+            {detail.pending_inputs.filter((item) => item.status === 'queued').map((item) => (
+              <div key={item.id} className="flex items-start gap-2 py-1">
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words"><span className="text-muted">終わったら送る: </span>{item.text}</span>
+                <button aria-label="予約を取り消す" className="shrink-0 rounded p-1 text-muted hover:text-fg" onClick={() => {
+                  if (conversationId) api.removeInput(conversationId, item.id).then((result) => {
+                    if (!result.removed) onError(new Error('この予約はすでに処理されています。会話を確認してください。'))
+                    return load(conversationId)
+                  }).catch(onError)
+                }}><X className="size-4" aria-hidden /></button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
           <textarea
             value={input}
@@ -480,14 +543,15 @@ export default function ChatView(props: Props) {
               }
             }}
             rows={Math.min(8, Math.max(1, input.split('\n').length))}
-            placeholder={target ? 'メッセージを入力' : '実行元とモデルを選んでください'}
+            placeholder={live && canInput ? '作業中の追加指示を入力' : target ? 'メッセージを入力' : '実行元とモデルを選んでください'}
             className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent px-2 py-1.5 outline-none"
           />
-          {live ? (
+          {live && (
             <button onClick={() => api.cancel(live.runId).catch(onError)} className="rounded-xl bg-raised p-2" aria-label="停止" title="停止">
               <Square className="size-5" aria-hidden />
             </button>
-          ) : (
+          )}
+          {(!live || canInput) && (
             <button
               onClick={() => sendText(input.trim())}
               disabled={!input.trim() || !target || sending || blocked !== null}

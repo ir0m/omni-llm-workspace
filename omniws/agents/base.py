@@ -40,6 +40,7 @@ class Decision:
 
 
 AskPermission = Callable[[PermissionRequest], Awaitable[Decision]]
+Steer = Callable[[str], Awaitable[bool]]  # False means definitively not accepted; safe to queue
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Turn:
     on_session: Callable[[str], None]  # called with the agent's session id once known
     require_resume: bool = False  # imported sessions must never silently become a different session
     on_turn_id: Callable[[str], None] | None = None
+    on_input_ready: Callable[[Steer | None], None] | None = None
 
 
 class Agent(Protocol):

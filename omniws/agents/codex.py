@@ -423,6 +423,18 @@ class CodexAgent:
             turn_id = (started or {}).get("turn", {}).get("id")
             if turn_id and turn.on_turn_id:
                 turn.on_turn_id(turn_id)
+            async def steer(text: str) -> bool:
+                try:
+                    await connection.call("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
+                        "input": [{"type": "text", "text": text}]}, timeout=30)
+                    return True
+                except RpcError as exc:
+                    if exc.code in (-32600, -32601, -32602):  # explicitly rejected, not an uncertain transport failure
+                        return False
+                    raise
+
+            if turn_id and turn.on_input_ready:
+                turn.on_input_ready(steer)
             outputs: dict[str, str] = {}
             streamed: set[str] = set()
             failure: dict[str, Any] | None = None
@@ -472,6 +484,8 @@ class CodexAgent:
                     finished = data.get("turn") or {}
                     if finished.get("status") == "failed":
                         raise turn_error(finished.get("error") or failure)
+                    if finished.get("status") == "interrupted":
+                        raise asyncio.CancelledError
                     break
             if usage:
                 yield usage
@@ -481,6 +495,8 @@ class CodexAgent:
                     await asyncio.wait_for(connection.call("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}), 10)
             raise
         finally:
+            if turn.on_input_ready:
+                turn.on_input_ready(None)
             connection.unlisten(thread_id)
             if turn.temporary:
                 self.open_threads.pop(thread_id, None)

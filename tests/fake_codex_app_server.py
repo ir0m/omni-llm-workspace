@@ -29,6 +29,14 @@ def ask(method, params):
     send({"id": next_id, "method": method, "params": params})
     for line in sys.stdin:
         message = json.loads(line)
+        if message.get("method") == "turn/steer":
+            data = message["params"]
+            note(threads[data["threadId"]]["cwd"], "turn/steer", data)
+            if data["expectedTurnId"] != "turn1":
+                send({"id": message["id"], "error": {"code": -32602, "message": "turn mismatch"}})
+            else:
+                send({"id": message["id"], "result": {"turnId": "turn1"}})
+            continue
         if message.get("id") == next_id and "method" not in message:
             return message.get("result") or {}
     sys.exit(0)

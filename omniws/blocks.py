@@ -29,6 +29,8 @@ def apply(blocks: list[dict[str, Any]], update: Update) -> None:
             blocks[-1]["text"] += text
         else:
             blocks.append({"type": block_type, "text": text})
+    elif kind == "user_message_chunk":
+        blocks.append({"type": "user_input", "text": (update.get("content") or {}).get("text", "")})
     elif kind in ("tool_call", "tool_call_update"):
         block = next((b for b in blocks if b["type"] == "tool_call" and b["id"] == update["toolCallId"]), None)
         if block is None:

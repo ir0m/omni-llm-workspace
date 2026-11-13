@@ -108,6 +108,15 @@ function pieces(blocks: Block[], live: boolean): Piece[] {
       out.push({ key: `plan-${index}`, node: <PlanSummary entries={block.entries} /> })
     } else if (block.type === 'text') {
       if (block.text) out.push({ key: `text-${index}`, node: <Markdown text={block.text} /> })
+    } else if (block.type === 'user_input') {
+      out.push({ key: `input-${index}`, node: (
+        <div className="flex flex-col items-end">
+          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-raised px-4 py-2.5">
+            <span className="mb-1 block text-xs text-muted">作業中の指示</span>{block.text}
+          </div>
+          <CopyButton text={block.text} />
+        </div>
+      ) })
     } else if (block.type === 'thinking') {
       if (!block.text) continue
       out.push({

@@ -15,6 +15,8 @@ export function applyUpdate(blocks: Block[], update: Update): Block[] {
     const last = next[next.length - 1]
     if (last && last.type === type) next[next.length - 1] = { ...last, text: last.text + text }
     else next.push({ type, text })
+  } else if (kind === 'user_message_chunk') {
+    next.push({ type: 'user_input', text: update.content?.text ?? '' })
   } else if (kind === 'tool_call' || kind === 'tool_call_update') {
     const index = next.findIndex((block) => block.type === 'tool_call' && block.id === update.toolCallId)
     const base: Block = index >= 0 ? next[index] : { type: 'tool_call', id: update.toolCallId, title: '', kind: 'other', status: 'pending' }

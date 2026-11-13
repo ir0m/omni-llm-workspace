@@ -46,10 +46,13 @@ def migrate(engine: Engine) -> None:
 
 def mark_interrupted(sessions: sessionmaker[Session]) -> None:
     """Replies that were streaming when the server stopped can't continue."""
-    from .models import Message
+    from .models import Conversation, Message
 
     with sessions.begin() as session:
         session.execute(update(Message).where(Message.status == "streaming").values(status="interrupted"))
+        for conversation in session.query(Conversation):
+            if conversation.pending_inputs:
+                conversation.pending_inputs = [{**item, "status": "returned"} for item in conversation.pending_inputs]
 
 
 def session_dependency(sessions: sessionmaker[Session]):

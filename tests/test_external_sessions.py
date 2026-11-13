@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,6 +133,38 @@ def test_other_provider_history_is_handed_over_but_native_history_is_not(native_
     follow(client, started.json()["run_id"], lambda _: "deny")
     unseen = agents["codex"].received[-1].unseen
     assert len(unseen) == 2 and unseen[0]["text"] == "別モデルに相談"
+
+
+def test_steered_imported_codex_turn_is_not_duplicated_on_refresh(native_client):
+    client, agents = native_client
+    agent = agents['codex']
+    original = agent.run
+    async def run_with_input(turn):
+        instructions = []
+        async def steer(text):
+            instructions.append({'type': 'user_input', 'text': text})
+            return True
+        turn.on_input_ready(steer)
+        try:
+            async for update in original(turn):
+                yield update
+            agent.turns[-1].assistant = instructions + agent.turns[-1].assistant
+        finally:
+            turn.on_input_ready(None)
+    agent.run = run_with_input
+    cid = next(item['id'] for item in discover(client) if item['target']['provider'] == 'codex')
+    started = client.post(f'/api/conversations/{cid}/messages', json={
+        'text': '続けて', 'provider': 'codex', 'model': 'm1'}).json()
+    def steer_and_allow(_):
+        result = client.post(f'/api/runs/{started["run_id"]}/input', json={
+            'id': str(uuid.uuid4()), 'text': '重複させない'})
+        assert result.json()['status'] == 'delivered'
+        return 'allow'
+    follow(client, started['run_id'], steer_and_allow)
+    for _ in range(2):
+        messages = client.get(f'/api/conversations/{cid}').json()['messages']
+        assert len(messages) == 4
+        assert messages[-1]['content'] == [{'type': 'user_input', 'text': '重複させない'}, *blocks('許可')]
 
 
 def test_local_operations_survive_discovery_and_delete_does_not_resurrect(native_client):

@@ -1,6 +1,7 @@
 import json
 import stat
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,24 @@ def test_helpers(tmp_path):
     update = item_update("tool_call_update", {"type": "fileChange", "id": "f", "status": "completed",
                                               "changes": [{"path": str(tmp_path / "a.py"), "kind": {"type": "add"}, "diff": "+x"}]}, tmp_path)
     assert update["kind"] == "edit" and update["path"] == "a.py" and update["diff"].startswith("--- /dev/null\n+++ b/a.py")
+
+
+def test_native_steer_uses_current_thread_and_turn(codex_client):
+    client = codex_client
+    cid = client.post('/api/conversations', json={'mode': 'code', 'project': 'app'}).json()['id']
+    started = client.post(f'/api/conversations/{cid}/messages', json={
+        'text': '作業して', 'provider': 'codex', 'model': 'gpt-b'}).json()
+
+    def steer_and_allow(event):
+        response = client.post(f'/api/runs/{started["run_id"]}/input', json={
+            'id': str(uuid.uuid4()), 'text': '追加指示'})
+        assert response.json()['status'] == 'delivered'
+        return 'allow'
+
+    follow(client, started['run_id'], steer_and_allow)
+    log = requests(client.app.state.settings.omni_projects_dir / 'app')
+    steer = next(item['params'] for item in log if item['method'] == 'turn/steer')
+    assert steer == {'threadId': 'thread-1', 'expectedTurnId': 'turn1', 'input': [{'type': 'text', 'text': '追加指示'}]}
 
 
 def test_executor_entry_shows_plan_models_and_usage(codex_client):

@@ -11,6 +11,7 @@ from omniws.agents.claude import ClaudeCodeAgent, tool_fields
 from omniws.config import Settings
 from omniws.main import create_app
 from omniws.providers.registry import Registry
+from omniws.providers.base import ProviderError
 
 from .conftest import PASSWORD, make_settings
 
@@ -176,3 +177,25 @@ def test_subscription_is_off_by_default(tmp_path):
                               json={"text": "x", "provider": "claude_code", "model": "haiku"})
     assert entry["configured"] is False and entry["setting"] == "OMNI_ALLOW_CLAUDE_SUBSCRIPTION=true"
     assert refused.status_code == 400 and refused.json()["detail"] == "agent_not_installed"
+
+
+def test_usage_limit_is_not_success_even_if_cli_result_says_success(tmp_path, monkeypatch):
+    class LimitedClient:
+        def __init__(self, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def query(self, prompt):
+            pass
+        async def receive_response(self):
+            yield sdk.AssistantMessage(content=[], model='haiku', error='rate_limit')
+            yield sdk.ResultMessage(subtype='success', duration_ms=1, duration_api_ms=1, is_error=False,
+                                    num_turns=1, session_id='test-limit', result='Usage limit')
+    monkeypatch.setattr(sdk, 'ClaudeSDKClient', LimitedClient)
+    async def check():
+        return [update async for update in agent(tmp_path).run(turn(tmp_path))]
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(check())
+    assert caught.value.code == 'rate_limit'

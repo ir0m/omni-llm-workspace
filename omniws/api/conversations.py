@@ -147,7 +147,8 @@ async def get_conversation(conversation_id: str, request: Request):
             with state.sessions() as session:
                 conversation = find(session, conversation_id)
                 return {**conversation_dict(conversation, state.runs), "sync_error": error,
-                        "messages": [message_dict(message) for message in conversation.messages]}
+                        "messages": [message_dict(message) for message in conversation.messages],
+                        "pending_inputs": conversation.pending_inputs or []}
         return await run_in_threadpool(read)
 
 
@@ -214,7 +215,7 @@ async def send_message(conversation_id: str, body: Send, request: Request):
         return await _send_message(conversation_id, body, request)
 
 
-async def _send_message(conversation_id: str, body: Send, request: Request):
+async def _send_message(conversation_id: str, body: Send, request: Request, *, consume_inputs: set[str] | None = None):
     """Stores the user's message and starts the reply in the background. Follow it at /api/runs/{id}/events.
 
     Chat turns go to the chosen provider. Code turns go to an agent in the conversation's project:
@@ -260,6 +261,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
         with state.sessions.begin() as session:
             conversation = find(session, conversation_id)
             earlier = list(conversation.messages)
+            if consume_inputs:
+                conversation.pending_inputs = [item for item in conversation.pending_inputs if item["id"] not in consume_inputs]
             seq = (earlier[-1].seq if earlier else 0) + 1
             now = now_ms()
             user = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq, role="user",
@@ -343,6 +346,34 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
                 return
             store_native(session)
 
+    async def after_finish(finished: Run) -> None:
+        # Serialized with ordinary sends, refreshes and cancelling queue entries.
+        async with external_sessions.lock:
+            with state.sessions() as session:
+                conversation = session.get(Conversation, conversation_id)
+                if conversation is None:
+                    return
+                queued = [item for item in conversation.pending_inputs
+                          if item["run_id"] == finished.id and item["status"] == "queued"]
+                unchanged = conversation.mode == mode and conversation.project == project
+            if not queued:
+                return
+            if finished.status == "complete" and unchanged and not runs.active_for(conversation_id):
+                try:
+                    await external_sessions.sync(conversation_id, sending=True)
+                    await _send_message(conversation_id,
+                        body.model_copy(update={"text": "\n\n".join(item["text"] for item in queued)}),
+                        request, consume_inputs={item["id"] for item in queued})
+                    return
+                except Exception:
+                    log.exception("starting queued input for %s failed", conversation_id)
+            with state.sessions.begin() as session:
+                conversation = session.get(Conversation, conversation_id)
+                if conversation:
+                    conversation.pending_inputs = [
+                        {**item, "status": "returned"} if item["run_id"] == finished.id else item
+                        for item in conversation.pending_inputs]
+
     if agent is None:
         chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort)
 
@@ -350,6 +381,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
             return provider.stream(chat_request, model_info)
 
         run = runs.start(conversation_id, reply_id, chat_stream, save)
+        run.after_finish = after_finish
         return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
 
     rules: list[dict[str, Any]] = prepared["rules"]
@@ -388,12 +420,14 @@ async def _send_message(conversation_id: str, body: Send, request: Request):
                     prompt=prepared["prompt"], fresh_prompt=prepared["fresh_prompt"], unseen=prepared["unseen"],
                     earlier=prepared["earlier"], native_session=native_box["id"], temporary=prepared["temporary"],
                     effort=body.effort, ask_permission=run.ask, on_session=on_session,
-                    require_resume=prepared.get("require_resume", False), on_turn_id=on_turn_id)
+                    require_resume=prepared.get("require_resume", False), on_turn_id=on_turn_id,
+                    on_input_ready=run.set_steer)
         async for update in agent.run(turn):
             yield update
 
     if not prepared["temporary"]:
         send_token = external_sessions.begin_send(agent.id, cwd)
     run = runs.start(conversation_id, reply_id, agent_stream, save, decide=decide)
+    run.after_finish = after_finish
     run.rules = rules
     return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}

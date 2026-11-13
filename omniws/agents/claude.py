@@ -292,8 +292,13 @@ class ClaudeCodeAgent:
             async with sdk.ClaudeSDKClient(options=self.turn_options(turn, resume)) as client:
                 await client.query(prompt)
                 result = None
+                failure = None
                 async for message in client.receive_response():
                     started = True
+                    if isinstance(message, sdk.AssistantMessage) and message.error == "rate_limit":
+                        # Some CLI versions end a usage-limit reply with a success ResultMessage.
+                        # It must still return queued instructions instead of starting another request.
+                        failure = ProviderError("rate_limit", "Claude の利用上限に達しました")
                     if isinstance(message, sdk.AssistantMessage) and not message.parent_tool_use_id \
                             and message.uuid and turn.on_turn_id:
                         turn.on_turn_id(message.uuid)
@@ -305,6 +310,8 @@ class ClaudeCodeAgent:
                 with contextlib.suppress(Exception):
                     context = await client.get_context_usage()
                     usage.update(self.context_from(context))
+                if failure:
+                    raise failure
                 if result is not None and result.is_error:
                     raise self.error_from(result)
                 yield usage

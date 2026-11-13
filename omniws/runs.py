@@ -13,12 +13,12 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import blocks
-from .agents.base import Decision, PermissionRequest
+from .agents.base import Decision, PermissionRequest, Steer
 from .events import Update
 from .providers.base import ProviderError
 
@@ -45,8 +45,19 @@ class Run:
     pending: dict[str, tuple[PermissionRequest, asyncio.Future]] = field(default_factory=dict)
     # What "always allow" remembered for this conversation; the policy reads the same list
     rules: list[dict[str, Any]] = field(default_factory=list)
+    steer: Steer | None = None
+    input_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    accepting_input: bool = True
+    input_receipts: dict[str, dict] = field(default_factory=dict)
+    after_finish: Callable[[Run], Awaitable[None]] | None = None
+    events_complete: bool = False
+
+    def set_steer(self, handler: Steer | None) -> None:
+        self.steer = handler
 
     def emit(self, name: str, data: dict[str, Any]) -> None:
+        if name == "status" and data.get("status") != "running":
+            self.events_complete = True
         self.events.append((len(self.events) + 1, name, data))
         self.changed.set()
         self.changed = asyncio.Event()
@@ -102,8 +113,9 @@ class RunManager:
 
     def cancel(self, run_id: str) -> bool:
         run = self.runs.get(run_id)
-        if run is None or run.done or run.task is None:
+        if run is None or run.done or run.task is None or not run.accepting_input:
             return False
+        run.accepting_input = False
         run.task.cancel()
         return True
 
@@ -128,7 +140,7 @@ class RunManager:
             while sent < len(run.events):
                 sent += 1
                 yield run.events[sent - 1]
-            if run.done:
+            if run.events_complete:
                 return
             await changed.wait()
 
@@ -166,12 +178,22 @@ class RunManager:
             status, error = "error", {"code": "internal", "message": type(exc).__name__}
         for _request, future in list(run.pending.values()):
             future.cancel()
-        try:
-            await asyncio.to_thread(save, status, content, usage, error)
-        except Exception:
-            log.exception("saving run %s failed", run.id)
-        run.status = status
-        run.finished_at = time.monotonic()
+        async with run.input_lock:
+            run.accepting_input = False
+            run.steer = None
+            try:
+                await asyncio.to_thread(save, status, content, usage, error)
+            except Exception:
+                log.exception("saving run %s failed", run.id)
+                status = "error"
+            run.status = status
+            run.finished_at = time.monotonic()
+        if run.after_finish:
+            try:
+                await run.after_finish(run)
+            except Exception:
+                log.exception("processing queued input for %s failed", run.id)
+        run.events_complete = True
         run.emit("status", {"status": status, "messageId": run.message_id, "usage": usage, "error": error})
 
     def _forget_old(self) -> None:

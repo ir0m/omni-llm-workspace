@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..models import Message
+from ..history import segments
 
 TEXT_LIMIT = 6000
 KIND_LABEL = {"read": "読んだ", "search": "検索した", "edit": "編集した", "delete": "削除した", "move": "移動した",
@@ -22,13 +23,17 @@ def tool_summary(block: dict[str, Any]) -> str:
 
 
 def describe(message: Message) -> str:
-    text = "".join(block.get("text", "") for block in message.content or [] if block.get("type") == "text").strip()
+    return "\n\n".join(describe_part(message, role, content) for role, content in segments(message))
+
+
+def describe_part(message: Message, role: str, content: list[dict]) -> str:
+    text = "".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
     if len(text) > TEXT_LIMIT:
         text = text[:TEXT_LIMIT] + "…（省略）"
-    if message.role == "user":
+    if role == "user":
         return f"[user]\n{text}"
     who = " / ".join(part for part in (message.agent, message.model) if part)
-    tools = [tool_summary(block) for block in message.content or [] if block.get("type") == "tool_call"]
+    tools = [tool_summary(block) for block in content if block.get("type") == "tool_call"]
     lines = [f"[assistant: {who}]" if who else "[assistant]"]
     if tools:
         lines.append("操作:\n" + "\n".join(tools))
@@ -54,9 +59,10 @@ def turn_items(earlier: Iterable[Message]) -> list[dict[str, str]]:
     for message in earlier:
         if message.status == "streaming":
             continue
-        text = describe(message)
-        if message.role == "user":
-            text = text.removeprefix("[user]\n")
-        if text.strip() and text.strip() not in ("[user]", "[assistant]"):
-            items.append({"role": "user" if message.role == "user" else "assistant", "text": text})
+        for role, content in segments(message):
+            text = describe_part(message, role, content)
+            if role == "user":
+                text = text.removeprefix("[user]\n")
+            if text.strip() and text.strip() not in ("[user]", "[assistant]"):
+                items.append({"role": role, "text": text})
     return items

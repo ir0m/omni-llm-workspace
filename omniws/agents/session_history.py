@@ -50,7 +50,10 @@ def codex_history(thread: dict, cwd: Path) -> list[HistoryTurn]:
             if kind == "userMessage":
                 text = text_content(item.get("content"))
                 if text:
-                    turn.user.append({"type": "text", "text": text})
+                    if turn.user:
+                        turn.assistant.append({"type": "user_input", "text": text})
+                    else:
+                        turn.user.append({"type": "text", "text": text})
             elif kind == "agentMessage":
                 turn.assistant.append({"type": "text", "text": item.get("text", "")})
             elif kind == "reasoning":
