@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base, now_ms
@@ -85,3 +85,30 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON)
     note: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class Passkey(Base):
+    """A WebAuthn credential (one per device). Sessions signed in with it end when it is deleted."""
+
+    __tablename__ = "passkeys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    credential_id: Mapped[str] = mapped_column(String(400), unique=True)  # base64url
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    rp_id: Mapped[str] = mapped_column(String(253))
+    name: Mapped[str] = mapped_column(String(100), default="")
+    transports: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    last_used_at: Mapped[int | None] = mapped_column(Integer, default=None)
+
+
+class EnrollToken(Base):
+    """A one-time link to register a passkey without being signed in (the first device, or a lost one).
+    Only the SHA-256 of the token is stored."""
+
+    __tablename__ = "enroll_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[int] = mapped_column(Integer)
+    used_at: Mapped[int | None] = mapped_column(Integer, default=None)

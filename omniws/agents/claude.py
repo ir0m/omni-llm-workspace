@@ -103,13 +103,28 @@ def plan_update(data: dict[str, Any]) -> Update:
                                                   "priority": "medium"} for todo in data.get("todos") or [] if isinstance(todo, dict)]}
 
 
+def expand_imports(text: str, cwd: Path) -> str:
+    """Lines that are just `@path` (CLAUDE.md imports) are replaced by that file, if it is inside the project."""
+    lines = []
+    for line in text.splitlines():
+        target = line.strip()
+        if target.startswith("@") and " " not in target and len(target) > 1:
+            path = (cwd / target[1:]).resolve()
+            if inside(cwd, path) and path.is_file():
+                lines.append(path.read_text(encoding="utf-8", errors="replace"))
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def claude_md(cwd: Path) -> str | None:
     """The project's CLAUDE.md (and CLAUDE.local.md), the only part of the project's Claude settings that is used."""
     parts = []
     for name in ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"):
         path = cwd / name
         if path.is_file():
-            parts.append(f"Contents of {name} (project instructions):\n\n{path.read_text(encoding='utf-8', errors='replace')}")
+            content = expand_imports(path.read_text(encoding="utf-8", errors="replace"), cwd)
+            parts.append(f"Contents of {name} (project instructions):\n\n{content}")
     text = "\n\n".join(parts)
     return text[:CLAUDE_MD_LIMIT] if text else None
 

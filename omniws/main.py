@@ -60,6 +60,7 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         app.state.sessions = sessionmaker(engine, expire_on_commit=False)
         app.state.get_session = session_dependency(app.state.sessions)
         mark_interrupted(app.state.sessions)
+        app.state.auth.load(app.state.sessions)
         yield
         for run in list(app.state.runs.runs.values()):
             if run.task and not run.done:

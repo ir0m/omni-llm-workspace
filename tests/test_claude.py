@@ -65,6 +65,12 @@ def test_options_for_chat_and_code(tmp_path):
     assert code.setting_sources == [] and code.can_use_tool is not None and code.resume is None
     assert code.extra_args == {"no-session-persistence": None}
     assert claude.turn_options(turn(tmp_path), "ses-1").resume == "ses-1"
+    # `@AGENTS.md` in CLAUDE.md brings that file in; files outside the project stay out
+    (tmp_path / "AGENTS.md").write_text("作業ルール")
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n@../outside.md")
+    (tmp_path.parent / "outside.md").write_text("秘密")
+    append = claude.turn_options(turn(tmp_path), None).system_prompt["append"]
+    assert "作業ルール" in append and "秘密" not in append and "@../outside.md" in append
 
 
 def test_messages_become_updates(tmp_path):

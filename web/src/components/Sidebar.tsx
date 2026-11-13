@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FolderMinus, GitBranch, LogOut, MoreHorizontal, Pencil,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
   Pin, PinOff, Plus, Search, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
+import PasskeyDialog from './PasskeyDialog'
 
 const COLLAPSED = 'omni.collapsedGroups'
 
@@ -68,6 +69,7 @@ export default function Sidebar(props: Props) {
   const [query, setQuery] = useState('')
   const [dragging, setDragging] = useState<{ id: string; group: string } | null>(null)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
+  const [passkeys, setPasskeys] = useState(false)
   const search = query.trim().toLowerCase()
   const shown = props.conversations.filter((item) => item.title.toLowerCase().includes(search))
   const groups = groupConversations(shown, props.projects).filter((group) =>
@@ -181,11 +183,17 @@ export default function Sidebar(props: Props) {
             {props.includeHidden ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
             {props.includeHidden ? '非表示の会話を隠す' : '非表示の会話も表示'}
           </button>
-          <button onClick={props.onSignOut} className="rounded-lg p-2 text-muted hover:text-fg" aria-label="ログアウト" title="ログアウト">
-            <LogOut className="size-4" aria-hidden />
-          </button>
+          <span className="flex">
+            <button onClick={() => setPasskeys(true)} className="rounded-lg p-2 text-muted hover:text-fg" aria-label="パスキー" title="パスキー">
+              <KeyRound className="size-4" aria-hidden />
+            </button>
+            <button onClick={props.onSignOut} className="rounded-lg p-2 text-muted hover:text-fg" aria-label="ログアウト" title="ログアウト">
+              <LogOut className="size-4" aria-hidden />
+            </button>
+          </span>
         </div>
       </aside>
+      {passkeys && <PasskeyDialog onClose={() => setPasskeys(false)} onSignedOut={props.onSignOut} />}
     </>
   )
 }

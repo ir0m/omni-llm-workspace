@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", env_file_encoding="utf-8",
                                       env_ignore_empty=True, extra="ignore")
 
-    # The app itself
+    # The app itself. Sign-in uses passkeys; OMNI_PASSWORD is for development and tests only.
     omni_password: SecretStr | None = None
     omni_secret: SecretStr | None = None
     omni_host: str = "127.0.0.1"
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     omni_allow_git_clone: bool = True
     # Extra host names the browser may use, comma separated (for example the Tailscale name)
     omni_allowed_hosts: str = ""
+    # Where the app is opened, comma separated (https://host:port). Passkeys work only on these origins:
+    # HTTPS (Tailscale Serve) or http://localhost.
+    omni_public_urls: str = ""
 
     # API
     anthropic_api_key: SecretStr | None = None
@@ -72,11 +76,20 @@ class Settings(BaseSettings):
     def expand_home(cls, value: object) -> object:
         return Path(value).expanduser() if isinstance(value, (str, Path)) else value
 
+    def public_origins(self) -> list[str]:
+        origins = []
+        for url in self.omni_public_urls.split(","):
+            parts = urlsplit(url.strip())
+            if parts.scheme in ("https", "http") and parts.hostname:
+                origins.append(f"{parts.scheme}://{parts.netloc}".lower())
+        return origins
+
     def allowed_hosts(self) -> list[str]:
         extra = [host.strip().lower() for host in self.omni_allowed_hosts.split(",") if host.strip()]
         if any("*" in host for host in extra):
             raise ValueError("OMNI_ALLOWED_HOSTS accepts exact host names only")
-        return list(dict.fromkeys([*DEFAULT_ALLOWED_HOSTS, *extra]))
+        public = [urlsplit(origin).hostname or "" for origin in self.public_origins()]
+        return list(dict.fromkeys([*DEFAULT_ALLOWED_HOSTS, *extra, *public]))
 
     def enabled_providers(self) -> set[str] | None:
         names = {name.strip().lower() for name in self.omni_providers.split(",") if name.strip()}

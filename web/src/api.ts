@@ -1,3 +1,5 @@
+import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
+
 export type PlanEntry = { content: string; status: 'pending' | 'in_progress' | 'completed'; priority?: string }
 
 export type ToolCall = {
@@ -56,6 +58,9 @@ export type AppConfig = {
 }
 
 export type ErrorInfo = { code: string; message: string }
+
+export type Me = { signed_in: boolean; registered: boolean; password: boolean; passkey_origins: string[]; passkey_id: number | null }
+export type PasskeyInfo = { id: number; name: string; rp_id: string; created_at: number; last_used_at: number | null; current: boolean }
 
 export type Message = {
   id: string
@@ -172,7 +177,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  me: () => request<{ password_set: boolean; signed_in: boolean }>('GET', '/api/auth/me'),
+  me: () => request<Me>('GET', '/api/auth/me'),
+  passkeyRegisterOptions: (token?: string) =>
+    request<{ challenge_id: string; options: PublicKeyCredentialCreationOptionsJSON }>('POST', '/api/auth/passkey/register/options', { token: token ?? null }),
+  passkeyRegisterVerify: (challengeId: string, credential: unknown, name: string) =>
+    request<{ ok: boolean; id: number }>('POST', '/api/auth/passkey/register/verify', { challenge_id: challengeId, credential, name }),
+  passkeyLoginOptions: () =>
+    request<{ challenge_id: string; options: PublicKeyCredentialRequestOptionsJSON }>('POST', '/api/auth/passkey/login/options'),
+  passkeyLoginVerify: (challengeId: string, credential: unknown) =>
+    request<{ ok: boolean }>('POST', '/api/auth/passkey/login/verify', { challenge_id: challengeId, credential }),
+  passkeys: () => request<PasskeyInfo[]>('GET', '/api/auth/passkeys'),
+  deletePasskey: (id: number) => request<{ ok: boolean }>('DELETE', `/api/auth/passkeys/${id}`),
   login: (password: string) => request<{ ok: boolean }>('POST', '/api/auth/login', { password }),
   logout: () => request<{ ok: boolean }>('POST', '/api/auth/logout'),
   conversations: (includeHidden: boolean) =>

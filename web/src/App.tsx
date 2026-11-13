@@ -1,35 +1,37 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api } from './api'
-import Login from './components/Login'
+import { api, type Me } from './api'
+import Login, { Enroll } from './components/Login'
 import Workspace from './components/Workspace'
 
-type State = 'loading' | 'signed-out' | 'signed-in' | 'no-password' | 'offline'
+function enrollToken(): string | null {
+  const match = window.location.hash.match(/^#\/enroll\/([\w-]+)$/)
+  return match ? match[1] : null
+}
 
 export default function App() {
-  const [state, setState] = useState<State>('loading')
+  const [me, setMe] = useState<Me | null>(null)
+  const [offline, setOffline] = useState(false)
+  const [token, setToken] = useState<string | null>(enrollToken)
 
   const check = useCallback(() => {
-    api
-      .me()
-      .then((me) => setState(!me.password_set ? 'no-password' : me.signed_in ? 'signed-in' : 'signed-out'))
-      .catch(() => setState('offline'))
+    api.me().then((value) => {
+      setMe(value)
+      setOffline(false)
+    }).catch(() => setOffline(true))
   }, [])
 
   useEffect(check, [check])
+  useEffect(() => {
+    const onHash = () => setToken(enrollToken())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
-  if (state === 'loading') return <Centered>読み込み中…</Centered>
-  if (state === 'offline') return <Centered>サーバーに接続できません</Centered>
-  if (state === 'no-password')
-    return (
-      <Centered>
-        <p className="font-medium">パスワードが未設定です</p>
-        <p className="mt-2 text-sm text-muted">
-          .env に <code className="font-mono">OMNI_PASSWORD</code> を書いて、サーバーを再起動してください。
-        </p>
-      </Centered>
-    )
-  if (state === 'signed-out') return <Login onSignedIn={() => setState('signed-in')} />
-  return <Workspace onSignedOut={() => setState('signed-out')} />
+  if (offline) return <Centered>サーバーに接続できません</Centered>
+  if (!me) return <Centered>読み込み中…</Centered>
+  if (token && !me.signed_in) return <Enroll token={token} me={me} onDone={() => { setToken(null); check() }} />
+  if (!me.signed_in) return <Login me={me} onSignedIn={check} />
+  return <Workspace onSignedOut={() => { window.location.hash = ''; check() }} />
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
