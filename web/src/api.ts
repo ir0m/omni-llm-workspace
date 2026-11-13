@@ -124,6 +124,8 @@ export type Executor = {
   note?: string | null
   models: ModelInfo[]
   usage?: SubscriptionUsage | null
+  /** The model and effort a new conversation starts with (settings screen) */
+  default?: { model: string; effort: string | null } | null
 }
 
 export type UsageWindow = {
@@ -155,6 +157,64 @@ export type ChangeStage = 'staged' | 'unstaged' | 'untracked'
 export type GitChange = { path: string; old_path: string | null; status: string }
 export type ProjectChanges = { is_git: boolean } & Record<ChangeStage, GitChange[]>
 export type FileDiff = { path: string; patch: string; truncated: boolean }
+
+export type OutsideLimit = 'mode' | 'ask' | 'deny'
+export type PermissionValues = {
+  omni_approval_default: ApprovalMode
+  omni_approval_max: ApprovalMode
+  omni_outside_read: OutsideLimit
+  omni_outside_write: OutsideLimit
+  omni_allow_shell: boolean
+  omni_allow_network: boolean
+  omni_allow_project_create: boolean
+  omni_allow_git_clone: boolean
+  omni_allow_claude_subscription: boolean
+  omni_allow_opencode_free: boolean
+}
+export type Permissions = {
+  values: PermissionValues
+  limits: PermissionValues
+  changed: string[]
+  shell_deny_env: string[]
+  shell_deny_extra: string[]
+  projects_dir: string
+}
+export type CodexLogin = { id: string | null; code: string | null; url: string | null; error: string | null; done: boolean }
+export type Accounts = {
+  codex: { installed: boolean; signed_in: boolean; error: string | null; login: CodexLogin | null; kind?: string | null
+    email?: string | null; plan?: string | null; workspace?: string | null; usage?: SubscriptionUsage | null }
+  claude: { allowed: boolean; signed_in: boolean; error: string | null; plan?: string | null; email?: string | null
+    usage?: SubscriptionUsage | null }
+  model_defaults: Record<string, { model: string; effort: string | null }>
+}
+export type ServerStatus = {
+  version: string
+  python: string
+  pid: number
+  started_at: number
+  uptime_seconds: number
+  systemd: boolean
+  can_restart: boolean
+  restart_required: boolean
+  active_runs: number
+  listen: string
+  public_urls: string[]
+  data_dir: string
+  data_bytes: number
+  projects_dir: string
+  projects: number
+  agents: { id: string; label: string; installed: boolean; version: string | null }[]
+}
+export type SessionCounts = {
+  conversations: number
+  chat: number
+  code: number
+  hidden: number
+  imported: { codex: number; claude: number }
+  skipped: number
+  active_runs: number
+  confirm_word: string
+}
 
 export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null }
 
@@ -221,6 +281,20 @@ export const api = {
   logout: () => request<{ ok: boolean }>('POST', '/api/auth/logout'),
   conversations: (includeHidden: boolean) =>
     request<Conversation[]>('GET', `/api/conversations?include_hidden=${includeHidden}`),
+  permissions: () => request<Permissions>('GET', '/api/settings/permissions'),
+  setPermissions: (changes: Record<string, unknown>) => request<Permissions>('PUT', '/api/settings/permissions', changes),
+  accounts: (refresh = false) => request<Accounts>('GET', `/api/settings/accounts?refresh=${refresh}`),
+  codexLogin: () => request<CodexLogin>('POST', '/api/settings/accounts/codex/login'),
+  codexCancelLogin: () => request<{ ok: boolean }>('DELETE', '/api/settings/accounts/codex/login'),
+  codexLogout: () => request<{ ok: boolean }>('POST', '/api/settings/accounts/codex/logout'),
+  setModelDefault: (executor: string, model: string | null, effort: string | null) =>
+    request<Accounts['model_defaults']>('PUT', '/api/settings/model-defaults', { executor, model, effort }),
+  server: () => request<ServerStatus>('GET', '/api/settings/server'),
+  restartServer: () => request<{ ok: boolean; started_at: number }>('POST', '/api/settings/server/restart'),
+  health: () => request<{ status: string; version: string }>('GET', '/api/health'),
+  sessionCounts: () => request<SessionCounts>('GET', '/api/settings/sessions'),
+  deleteAllConversations: (confirm: string) =>
+    request<{ deleted: number }>('POST', '/api/settings/conversations/delete-all', { confirm }),
   discoverSessions: () => request<{ added: number; errors: string[] }>('POST', '/api/sessions/discover'),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),

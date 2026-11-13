@@ -59,7 +59,18 @@ def matches(rule: dict[str, Any], request: PermissionRequest) -> bool:
     return bool(rule.get("outside")) or not request.outside_project
 
 
+def outside_limit(request: PermissionRequest, settings: Settings) -> tuple[str, str]:
+    """OMNI_OUTSIDE_READ for reading outside the project, OMNI_OUTSIDE_WRITE for everything else there."""
+    if request.kind in READING:
+        return "OMNI_OUTSIDE_READ", settings.omni_outside_read
+    return "OMNI_OUTSIDE_WRITE", settings.omni_outside_write
+
+
 def denied_by_env(request: PermissionRequest, settings: Settings) -> str | None:
+    if request.outside_project:
+        name, limit = outside_limit(request, settings)
+        if limit == "deny":
+            return f"{name}=deny"
     if request.kind != "execute":
         return None
     if not settings.omni_allow_shell:
@@ -75,6 +86,9 @@ def decide(request: PermissionRequest, mode: str | None, rules: list[dict[str, A
     reason = denied_by_env(request, settings)
     if reason:
         return "deny", reason
+    # Always confirmed: neither "always allow" nor the approval mode lets these through
+    if request.outside_project and outside_limit(request, settings)[1] == "ask":
+        return "ask", None
     if any(matches(rule, request) for rule in rules):
         return "allow", None
     level = clamp(mode, settings)

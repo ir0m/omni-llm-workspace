@@ -84,6 +84,9 @@ def run_turn(request_id, params):
         event(tid, "turn/completed", turn={"id": "turn1", "status": "completed", "items": []})
 
 
+account = {"signed_in": True}
+
+
 def main():
     for line in sys.stdin:
         message = json.loads(line)
@@ -93,7 +96,16 @@ def main():
         if method == "initialize":
             send({"id": request_id, "result": {"userAgent": "fake"}})
         elif method == "account/read":
-            send({"id": request_id, "result": {"account": {"type": "chatgpt", "planType": "plus"}}})
+            send({"id": request_id, "result": {"account": {"type": "chatgpt", "planType": "plus", "email": "me@example.invalid"}
+                                               if account["signed_in"] else None}})
+        elif method == "account/login/start":
+            send({"id": request_id, "result": {"type": "chatgptDeviceCode", "loginId": "login-1", "userCode": "ABCD-1234",
+                                               "verificationUrl": "https://example.invalid/device"}})
+            account["signed_in"] = True
+            send({"method": "account/login/completed", "params": {"loginId": "login-1", "success": True}})
+        elif method == "account/logout":
+            account["signed_in"] = False
+            send({"id": request_id, "result": {}})
         elif method == "account/rateLimits/read":
             send({"id": request_id, "result": {"rateLimits": {"primary": {"usedPercent": 92, "windowDurationMins": 300, "resetsAt": 1},
                                                                "secondary": {"usedPercent": 16, "windowDurationMins": 10080, "resetsAt": 2}}}})

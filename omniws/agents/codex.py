@@ -147,6 +147,8 @@ class CodexAgent:
         self.account: dict[str, Any] | None = None
         self.limits: dict[str, Any] | None = None
         self.account_at = 0.0
+        # A ChatGPT sign-in in progress: {"id", "code", "url", "error", "done"}
+        self.login: dict[str, Any] | None = None
         self.models_cache: list[ModelInfo] | None = None
 
     def installed(self) -> bool:
@@ -160,6 +162,12 @@ class CodexAgent:
     def _notice(self, method: str, params: dict[str, Any]) -> None:
         if method == "account/rateLimits/updated":
             self.limits = params.get("rateLimits") or self.limits
+        elif method == "account/login/completed":
+            if self.login and params.get("loginId") in (None, self.login.get("id")):
+                self.login.update(done=True, error=None if params.get("success") else (params.get("error") or "ログインできませんでした"))
+            self.account_at = 0.0
+        elif method == "account/updated":
+            self.account_at = 0.0
 
     async def connect(self) -> JsonRpcProcess:
         async with self.lock:
@@ -190,6 +198,27 @@ class CodexAgent:
             with contextlib.suppress(RpcError):
                 self.limits = ((await connection.call("account/rateLimits/read", {}, timeout=30)) or {}).get("rateLimits")
         self.account_at = time.monotonic()
+
+    async def start_login(self) -> dict[str, Any]:
+        """Signs in with a device code: the user opens the URL on any device and enters the code there,
+        so it works from a phone. The app never sees the ChatGPT credentials."""
+        await self.cancel_login()
+        connection = await self.connect()
+        result = await connection.call("account/login/start", {"type": "chatgptDeviceCode"}, timeout=60) or {}
+        self.login = {"id": result.get("loginId"), "code": result.get("userCode"), "url": result.get("verificationUrl"),
+                      "error": None, "done": False}
+        return self.login
+
+    async def cancel_login(self) -> None:
+        login, self.login = self.login, None
+        if login and login.get("id") and not login.get("done") and self.connection and self.connection.alive:
+            with contextlib.suppress(RpcError, asyncio.TimeoutError):
+                await self.connection.call("account/login/cancel", {"loginId": login["id"]}, timeout=30)
+
+    async def logout(self) -> None:
+        connection = await self.connect()
+        await connection.call("account/logout", None, timeout=30)
+        self.account, self.limits, self.account_at, self.login = None, None, 0.0, None
 
     def usage(self) -> dict[str, Any] | None:
         """The plan's windows for the picker and the meter: [{"label", "usedPercent", "resetsAt"}]."""

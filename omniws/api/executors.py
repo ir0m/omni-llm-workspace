@@ -4,6 +4,7 @@ import time
 
 from fastapi import APIRouter, Request
 
+from .. import app_settings
 from ..agents.jsonrpc import RpcError
 from ..agents.opencode import FREE, PROVIDER_IDS
 from ..providers.base import ProviderError
@@ -49,6 +50,11 @@ async def list_executors(request: Request, refresh: bool = False):
         agent = state.agents.get(agent_id)
         if agent is not None and (agent.installed() or agent_id == "claude_code"):
             overview.insert(position, await claude_entry(agent, refresh))
+    # The model and effort a new conversation starts with, chosen in the settings screen
+    with state.sessions() as session:
+        defaults = app_settings.read(session, app_settings.MODEL_DEFAULTS, {})
+    for item in overview:
+        item["default"] = defaults.get(item["id"])
     return overview
 
 
@@ -99,7 +105,7 @@ def config(request: Request):
     state = request.app.state
     settings = state.settings
     return {"approval_default": settings.omni_approval_default, "approval_max": settings.omni_approval_max,
-            "capabilities": ["native_sessions", "project_files"], "restart_required": restart_required(state),
-            "allow_shell": settings.omni_allow_shell, "shell_deny": settings.shell_deny(),
+            "capabilities": ["native_sessions", "project_files", "settings"], "restart_required": restart_required(state),
+            "allow_shell": settings.omni_allow_shell, "allow_network": settings.omni_allow_network, "shell_deny": settings.shell_deny(),
             "allow_opencode_free": settings.omni_allow_opencode_free,
             "allow_claude_subscription": settings.omni_allow_claude_subscription}

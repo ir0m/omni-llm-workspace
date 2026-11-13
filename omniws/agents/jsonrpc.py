@@ -72,7 +72,7 @@ class JsonRpcProcess:
             raise RpcError(-32000, "the agent is not running")
         self.process.stdin.write((json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False) + "\n").encode())
 
-    async def call(self, method: str, params: dict[str, Any], timeout: float | None = None) -> Any:
+    async def call(self, method: str, params: dict[str, Any] | None, timeout: float | None = None) -> Any:
         self.next_id += 1
         request_id = self.next_id
         future = asyncio.get_running_loop().create_future()

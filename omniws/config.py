@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     omni_allow_shell: bool = True
     # Network access from the agents' sandboxes (package installs, git pull)
     omni_allow_network: bool = True
+    # Requests outside the project folder: mode = as the approval mode decides, ask = always confirm, deny = never
+    omni_outside_read: Literal["mode", "ask", "deny"] = "mode"
+    omni_outside_write: Literal["mode", "ask", "deny"] = "mode"
     omni_shell_deny: str = "sudo,su,rm -rf /,rm -rf ~,mkfs,shutdown,reboot,git push --force,git push -f"
 
     @field_validator("omni_data_dir", "omni_projects_dir", mode="before")

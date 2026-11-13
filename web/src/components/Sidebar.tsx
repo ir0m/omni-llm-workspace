@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
-  Pin, PinOff, Plus, RefreshCw, Search, Timer, Trash2, X,
+  Pin, PinOff, Plus, RefreshCw, Search, Settings, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
 import PasskeyDialog from './PasskeyDialog'
@@ -63,6 +63,7 @@ type Props = {
   onRefresh: () => void
   refreshing: boolean
   serverUpdateNeeded: boolean
+  onOpenSettings: (() => void) | null
   onError: (error: unknown) => void
   onSignOut: () => void
 }
@@ -192,6 +193,9 @@ export default function Sidebar(props: Props) {
             {props.includeHidden ? '非表示の会話を隠す' : '非表示の会話も表示'}
           </button>
           <span className="flex">
+            {props.onOpenSettings && <button onClick={props.onOpenSettings} className="rounded-lg p-2 text-muted hover:text-fg" aria-label="設定" title="設定">
+              <Settings className="size-4" aria-hidden />
+            </button>}
             <button onClick={() => setPasskeys(true)} className="rounded-lg p-2 text-muted hover:text-fg" aria-label="パスキー" title="パスキー">
               <KeyRound className="size-4" aria-hidden />
             </button>

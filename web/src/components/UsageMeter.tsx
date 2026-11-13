@@ -39,7 +39,7 @@ export function usageLabel(executor: Executor): string {
   return `${high ? ' ⚠' : ''} ${windows.map((window) => `${window.label}${amount(window)}`).join(' ')}`
 }
 
-function Row({ window }: { window: UsageWindow }) {
+export function UsageRow({ window }: { window: UsageWindow }) {
   const percent = effective(window)
   return (
     <div className="flex items-center gap-2">
@@ -61,7 +61,7 @@ export default function UsageMeter({ executor }: { executor: Executor | undefine
   return (
     <div className="mx-auto mt-1.5 flex max-w-3xl flex-wrap items-start gap-x-4 gap-y-0.5 px-2 text-[11px] text-muted">
       <span className="font-medium">{executor.label}</span>
-      <div className="space-y-0.5">{windows.map((window) => <Row key={window.label} window={window} />)}</div>
+      <div className="space-y-0.5">{windows.map((window) => <UsageRow key={window.label} window={window} />)}</div>
     </div>
   )
 }

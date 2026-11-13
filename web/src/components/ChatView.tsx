@@ -7,7 +7,7 @@ import {
 import { applyUpdate, mergeUsage } from '../blocks'
 import { askToNotify, notify } from '../notify'
 import ApprovalCard from './ApprovalCard'
-import ExecutorPicker, { firstTarget, usable } from './ExecutorPicker'
+import ExecutorPicker, { firstTarget, startTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
 import PlanBar from './PlanBar'
 import ProjectPicker from './ProjectPicker'
@@ -167,6 +167,9 @@ export default function ChatView(props: Props) {
     if (target) return
     if (conversationId && !detail) return
     let initial = detail?.target ?? savedTarget(mode) ?? firstTarget(executors, mode)
+    // A new conversation keeps the last executor but starts with that executor's default model, if one is set
+    const chosen = !detail?.target && initial ? executors.find((item) => item.id === initial?.provider) : undefined
+    if (chosen?.default) initial = startTarget(chosen)
     if (initial && !initial.model) {
       const model = executors.find((item) => item.id === initial?.provider)?.models[0]?.id
       if (!model) return

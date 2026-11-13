@@ -16,9 +16,18 @@ export function usable(executor: Executor, mode: Mode): boolean {
   return executor.configured && executor.models.length > 0 && executor.modes.includes(mode)
 }
 
+/** Where a newly chosen executor starts: the default from the settings screen if it still exists, else its first model. */
+export function startTarget(executor: Executor): Target {
+  const saved = executor.default
+  if (saved && executor.models.some((model) => model.id === saved.model)) {
+    return { provider: executor.id, model: saved.model, effort: saved.effort }
+  }
+  return { provider: executor.id, model: executor.models[0]?.id ?? '', effort: null }
+}
+
 export function firstTarget(executors: Executor[], mode: Mode = 'chat'): Target | null {
   const executor = executors.find((item) => usable(item, mode))
-  return executor ? { provider: executor.id, model: executor.models[0].id, effort: null } : null
+  return executor ? startTarget(executor) : null
 }
 
 const select = 'shrink-0 truncate rounded-lg border border-border bg-bg px-2 py-1.5 text-sm'
@@ -35,7 +44,7 @@ export default function ExecutorPicker({ executors, mode, target, onChange, onRe
 
   function chooseExecutor(id: string) {
     const next = executors.find((item) => item.id === id)
-    if (next) onChange({ provider: next.id, model: next.models[0]?.id ?? '', effort: null })
+    if (next) onChange(startTarget(next))
   }
 
   return (

@@ -5,6 +5,8 @@ for the first device, or when every registered device is lost.
 """
 
 import argparse
+import os
+import sys
 
 import uvicorn
 
@@ -39,8 +41,17 @@ def main() -> None:
         passkey_link(args.minutes)
         return
     settings = get_settings()
-    uvicorn.run("omniws.main:app", host=settings.omni_host, port=settings.omni_port,
-                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
+    from .main import app
+
+    server = uvicorn.Server(uvicorn.Config(app, host=settings.omni_host, port=settings.omni_port, proxy_headers=True,
+                                           forwarded_allow_ips="127.0.0.1", timeout_graceful_shutdown=10))
+    # The settings screen stops the server through this flag; a signal would end the whole process afterwards
+    app.state.server = server
+    app.state.can_restart = True
+    server.run()
+    if getattr(app.state, "restart_requested", False):
+        # The settings screen asked for a restart: start again as the same process (systemd keeps its PID)
+        os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type AppConfig, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
 import ChatView from './ChatView'
+import SettingsDialog from './SettingsDialog'
 import Sidebar from './Sidebar'
 
 function idFromHash(): string | null {
@@ -41,6 +42,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [draft, setDraft] = useState<Draft>(BLANK)
   const [error, setError] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const discoveringRef = useRef(false)
   const lastDiscovery = useRef(0)
 
@@ -104,10 +106,17 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
     api.projects().then(setProjects).catch((caught) => quiet(caught))
   }, [quiet])
 
-  useEffect(refresh, [refresh])
-  useEffect(() => {
+  const loadConfig = useCallback(() => {
     api.config().then(setConfig).catch((caught) => quiet(caught))
   }, [quiet])
+
+  useEffect(refresh, [refresh])
+  useEffect(loadConfig, [loadConfig])
+  const settingsChanged = useCallback(() => {
+    loadConfig()
+    loadExecutors(true)
+    loadProjects()
+  }, [loadConfig, loadExecutors, loadProjects])
   useEffect(() => loadExecutors(), [loadExecutors])
   useEffect(() => {
     loadProjects()
@@ -155,8 +164,11 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         refreshing={discovering}
         serverUpdateNeeded={!!config && (!config.capabilities || !!config.restart_required)}
         onError={handle}
+        onOpenSettings={config?.capabilities?.includes('settings') ? () => { setSettingsOpen(true); setDrawerOpen(false) } : null}
         onSignOut={() => api.logout().finally(onSignedOut)}
       />
+      {settingsOpen && <SettingsDialog executors={executors} onClose={() => setSettingsOpen(false)} onChanged={settingsChanged}
+        onDiscover={() => discover(true)} onDeletedAll={() => { select(null); refresh() }} />}
       <ChatView
         key={selected ?? `new-${draft.mode}-${draft.project}-${draft.temporary}`}
         conversationId={selected}

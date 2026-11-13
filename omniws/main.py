@@ -10,8 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import __version__
+from . import __version__, app_settings
 from .api import conversations, executors, projects, runs, sessions
+from .api import settings as settings_api
 from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
@@ -62,6 +63,7 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         app.state.sessions = sessionmaker(engine, expire_on_commit=False)
         app.state.get_session = session_dependency(app.state.sessions)
         mark_interrupted(app.state.sessions)
+        app_settings.load(app.state.sessions, settings, app.state.env_settings)
         app.state.auth.load(app.state.sessions)
         yield
         for run in list(app.state.runs.runs.values()):
@@ -74,6 +76,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
 
     app = FastAPI(title="OmniLLMWorkspace", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
+    # What .env gave: the upper limit for what the settings screen changes in `settings`
+    app.state.env_settings = settings.model_copy(deep=True)
     app.state.settings = settings
     app.state.started_at = time.time()
     app.state.web_index = web_dist / "index.html"
@@ -91,7 +95,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.include_router(health)
     app.include_router(auth_router)
     signed_in = [Depends(require_user)]
-    for router in (conversations.router, runs.router, executors.router, projects.router, sessions.router):
+    for router in (conversations.router, runs.router, executors.router, projects.router, sessions.router,
+                   settings_api.router):
         app.include_router(router, dependencies=signed_in)
     mount_web(app, web_dist)
     return app
