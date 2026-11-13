@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .. import projects
 from ..config import Settings
+from ..files import FileError, ProjectFiles
 
 router = APIRouter(prefix="/api/projects")
 
@@ -62,3 +66,41 @@ async def clone_project(body: Clone, request: Request):
     except projects.ProjectError as exc:
         raise failure(exc) from exc
     return {"name": path.name}
+
+
+async def browse(request: Request, name: str, method: str, *args):
+    def read():
+        try:
+            return getattr(ProjectFiles(settings(request), name), method)(*args)
+        except FileError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    return await run_in_threadpool(read)
+
+
+@router.get("/{name}/files")
+async def list_files(name: str, request: Request, path: str = Query(default="", max_length=4096),
+                     offset: int = Query(default=0, ge=0), limit: int = Query(default=200, ge=1, le=500)):
+    return await browse(request, name, "tree", path, offset, limit)
+
+
+@router.get("/{name}/file")
+async def read_file(name: str, request: Request, path: str = Query(max_length=4096)):
+    return await browse(request, name, "file", path)
+
+
+@router.get("/{name}/image")
+async def read_image(name: str, request: Request, path: str = Query(max_length=4096)):
+    data, media_type = await browse(request, name, "image", path)
+    return Response(data, media_type=media_type, headers={"Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+
+@router.get("/{name}/changes")
+async def list_changes(name: str, request: Request):
+    return await browse(request, name, "changes")
+
+
+@router.get("/{name}/diff")
+async def read_diff(name: str, request: Request, path: str = Query(max_length=4096),
+                    stage: Literal["staged", "unstaged", "untracked"] = "unstaged"):
+    return await browse(request, name, "diff", path, stage)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, Menu, RefreshCw, Square, Timer } from 'lucide-react'
+import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer } from 'lucide-react'
 import {
   api, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
   type PermissionAsk, type ProjectList, type Target, type Usage,
@@ -12,6 +12,7 @@ import MessageView from './MessageView'
 import PlanBar from './PlanBar'
 import ProjectPicker from './ProjectPicker'
 import UsageMeter from './UsageMeter'
+import ProjectPanel from './ProjectPanel'
 
 const LAST_TARGET = 'omni.lastTarget'
 const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
@@ -73,6 +74,8 @@ export default function ChatView(props: Props) {
   const [target, setTarget] = useState<Target | null>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [panelRevision, setPanelRevision] = useState(0)
   const [followup, setFollowup] = useState<string | null>(null)
   // "Continue with another executor" after a usage limit: the message to send again and where to
   const [retry, setRetry] = useState<{ text: string; target: Target | null } | null>(null)
@@ -124,6 +127,7 @@ export default function ChatView(props: Props) {
         else setLive(null)
         onChanged()
         props.onRunFinished()  // usage windows move after every turn
+        setPanelRevision((value) => value + 1)
       }
       events.addEventListener('status', (event) => {
         const status = JSON.parse((event as MessageEvent).data).status
@@ -330,6 +334,7 @@ export default function ChatView(props: Props) {
   )
 
   return (
+    <div className="relative flex min-w-0 flex-1">
     <main className="flex min-w-0 flex-1 flex-col">
       <header className="border-b border-border">
         <div className="flex items-center gap-2 px-3 py-2">
@@ -347,9 +352,14 @@ export default function ChatView(props: Props) {
               <Timer className="size-3" aria-hidden /> 一時
             </span>
           )}
-          <div className="ml-auto hidden min-w-0 items-center gap-2 2xl:flex">{controls}</div>
+          <div className={`ml-auto hidden min-w-0 items-center gap-2 ${panelOpen && mode === 'code' && project ? '' : '2xl:flex'}`}>{controls}</div>
+          {mode === 'code' && project && <button onClick={() => setPanelOpen((open) => !open)}
+            aria-label="ファイル・差分を開く" title="ファイル・差分" aria-expanded={panelOpen}
+            className={`ml-auto shrink-0 rounded-lg p-2 ${panelOpen ? 'bg-raised text-accent' : 'text-muted hover:text-fg 2xl:ml-0'}`}>
+            <FolderOpen className="size-5" aria-hidden />
+          </button>}
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto px-3 pb-2 2xl:hidden">{controls}</div>
+        <div className={`flex items-center gap-2 overflow-x-auto px-3 pb-2 ${panelOpen && mode === 'code' && project ? '' : '2xl:hidden'}`}>{controls}</div>
       </header>
 
       <div
@@ -463,5 +473,7 @@ export default function ChatView(props: Props) {
         <UsageMeter executor={executor} />
       </div>
     </main>
+    {panelOpen && mode === 'code' && project && <ProjectPanel key={project} project={project} revision={panelRevision} onClose={() => setPanelOpen(false)} />}
+    </div>
   )
 }

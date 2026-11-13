@@ -142,6 +142,18 @@ export type Project = {
 
 export type ProjectList = { root: string; can_create: boolean; can_clone: boolean; projects: Project[] }
 
+export type FileEntry = { name: string; path: string; kind: 'directory' | 'file' | 'link' | 'other'; size: number }
+export type FileTree = { path: string; entries: FileEntry[]; next_offset: number | null }
+export type FilePreview = { path: string; size: number } & (
+  | { kind: 'text'; text: string; truncated: boolean }
+  | { kind: 'image'; media_type: string; too_large: boolean }
+  | { kind: 'binary' }
+)
+export type ChangeStage = 'staged' | 'unstaged' | 'untracked'
+export type GitChange = { path: string; old_path: string | null; status: string }
+export type ProjectChanges = { is_git: boolean } & Record<ChangeStage, GitChange[]>
+export type FileDiff = { path: string; patch: string; truncated: boolean }
+
 export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null }
 
 export class ApiError extends Error {
@@ -210,6 +222,15 @@ export const api = {
   config: () => request<AppConfig>('GET', '/api/config'),
   executors: (refresh = false) => request<Executor[]>('GET', `/api/executors?refresh=${refresh}`),
   projects: () => request<ProjectList>('GET', '/api/projects'),
+  files: (project: string, path = '', offset = 0) => request<FileTree>('GET',
+    `/api/projects/${encodeURIComponent(project)}/files?${new URLSearchParams({ path, offset: String(offset) })}`),
+  file: (project: string, path: string) => request<FilePreview>('GET',
+    `/api/projects/${encodeURIComponent(project)}/file?${new URLSearchParams({ path })}`),
+  imageUrl: (project: string, path: string, version: number) =>
+    `/api/projects/${encodeURIComponent(project)}/image?${new URLSearchParams({ path, v: String(version) })}`,
+  changes: (project: string) => request<ProjectChanges>('GET', `/api/projects/${encodeURIComponent(project)}/changes`),
+  diff: (project: string, path: string, stage: ChangeStage) => request<FileDiff>('GET',
+    `/api/projects/${encodeURIComponent(project)}/diff?${new URLSearchParams({ path, stage })}`),
   createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
     request<{ name: string }>('POST', '/api/projects', body),
   cloneProject: (body: { url: string; name?: string }) => request<{ name: string }>('POST', '/api/projects/clone', body),
