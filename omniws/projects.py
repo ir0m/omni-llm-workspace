@@ -49,9 +49,14 @@ async def git_state(path: Path) -> dict[str, Any] | None:
     if not (path / ".git").exists():
         return None
     try:
+        # The project's .git/config is writable by agents: never let it run a program (fsmonitor, hooks)
+        # behind a plain project listing.
         process = await asyncio.create_subprocess_exec(
-            "git", "-C", str(path), "status", "--porcelain=v1", "--branch",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            "git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}",
+            "-C", str(path), "status", "--porcelain=v1", "--branch",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0"})
         out, _ = await asyncio.wait_for(process.communicate(), GIT_TIMEOUT)
     except (OSError, TimeoutError):
         return {"branch": None, "changes": None}

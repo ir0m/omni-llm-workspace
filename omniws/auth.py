@@ -376,19 +376,59 @@ def delete_passkey(passkey_id: int, request: Request, session: Session = Depends
 
 
 class OriginCheck:
-    """Refuses state-changing requests sent from another site (on top of SameSite=Strict cookies)."""
+    """Refuses state-changing requests sent from another origin (on top of SameSite=Strict cookies).
 
-    def __init__(self, app: ASGIApp, allowed_hosts: list[str]) -> None:
+    The port counts: SameSite treats every port of a host as the same site, so another service on this host
+    (or a dev server an agent started) must not be able to post here with the user's cookie."""
+
+    def __init__(self, app: ASGIApp, allowed_hosts: list[str], public_origins: list[str] | None = None) -> None:
         self.app = app
         self.allowed = set(allowed_hosts)
+        self.public = {origin.lower() for origin in public_origins or []}
+
+    def allows(self, origin: str, host: str) -> bool:
+        parts = urlsplit(origin)
+        if origin.lower() in self.public:
+            return True
+        # Same host and port as the request itself (the page this app served)
+        return (parts.hostname or "").lower() in self.allowed and parts.netloc.lower() == host.lower()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope["method"] in UNSAFE_METHODS:
-            origin = dict(scope["headers"]).get(b"origin")
-            if origin is not None:
-                host = urlsplit(origin.decode("latin-1")).hostname or ""
-                if host.lower() not in self.allowed:
-                    response = Response('{"detail":"cross_origin"}', status_code=403, media_type="application/json")
-                    await response(scope, receive, send)
-                    return
+            headers = dict(scope["headers"])
+            origin = headers.get(b"origin")
+            if origin is not None and not self.allows(origin.decode("latin-1").rstrip("/"),
+                                                      headers.get(b"host", b"").decode("latin-1")):
+                response = Response('{"detail":"cross_origin"}', status_code=403, media_type="application/json")
+                await response(scope, receive, send)
+                return
         await self.app(scope, receive, send)
+
+
+# External images would load by themselves from a reply (a way to leak text through a URL); no framing
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+       "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+       "frame-ancestors 'none'")
+
+
+class SecurityHeaders:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
+                for name, value in ((b"content-security-policy", CSP), (b"x-frame-options", "DENY"),
+                                    (b"x-content-type-options", "nosniff"), (b"referrer-policy", "no-referrer")):
+                    if name not in present:
+                        headers.append((name, value.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, with_headers)

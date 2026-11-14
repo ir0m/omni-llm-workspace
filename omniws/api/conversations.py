@@ -446,7 +446,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
         cwd.mkdir(parents=True, exist_ok=True)
 
     def decide(permission):
-        return policy.decide(permission, prepared["approval_mode"], rules, settings)
+        return policy.decide(permission, prepared["approval_mode"], rules, settings, cwd)
 
     def on_session(session_id: str) -> None:
         changed = native_box["id"] != session_id

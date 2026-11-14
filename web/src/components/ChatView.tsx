@@ -13,6 +13,7 @@ import PlanBar from './PlanBar'
 import ProjectPicker from './ProjectPicker'
 import UsageMeter from './UsageMeter'
 import ProjectPanel from './ProjectPanel'
+import { useBackClose } from '../backClose'
 
 const LAST_TARGET = 'omni.lastTarget'
 const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
@@ -97,6 +98,8 @@ export default function ChatView(props: Props) {
   const [sending, setSending] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelRevision, setPanelRevision] = useState(0)
+  // Below lg the panel covers the conversation: the back button closes it
+  useBackClose(panelOpen && !window.matchMedia('(min-width: 1024px)').matches, () => setPanelOpen(false))
   const [followup, setFollowup] = useState<string | null>(null)
   // "Continue with another executor" after a usage limit: the message to send again and where to
   const [retry, setRetry] = useState<{ text: string; target: Target | null } | null>(null)
@@ -537,7 +540,7 @@ export default function ChatView(props: Props) {
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               // Enter sends on a keyboard; on touch screens Enter is a new line. Never while the IME is composing.
-              if (event.key === 'Enter' && !event.shiftKey && !touch && !event.nativeEvent.isComposing) {
+              if (event.key === 'Enter' && !event.shiftKey && !touch && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault()
                 sendText(input.trim())
               }

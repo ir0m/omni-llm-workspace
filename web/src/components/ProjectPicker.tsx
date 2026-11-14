@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { useBackClose } from '../backClose'
 import { ChevronDown, Download, Folder, FolderPlus, X } from 'lucide-react'
 import { api, ApiError, type ProjectList } from '../api'
 
@@ -21,6 +22,7 @@ export default function ProjectPicker({ list, value, onChange, onCreated }: {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 0, top: 0 })
   const [dialog, setDialog] = useState<'create' | 'clone' | null>(null)
+  useBackClose(dialog !== null, () => setDialog(null))
   const button = useRef<HTMLButtonElement>(null)
 
   function toggle() {
@@ -116,7 +118,8 @@ function ProjectDialog({ kind, root, onClose, onDone }: {
   const field = 'mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 outline-none focus:border-accent'
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <form onSubmit={submit} onClick={(event) => event.stopPropagation()} className="w-full max-w-sm rounded-2xl border border-border bg-bg p-5">
+      <form onSubmit={submit} onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => { if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault() }} className="w-full max-w-sm rounded-2xl border border-border bg-bg p-5">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">{kind === 'create' ? '新しいフォルダ' : 'git clone'}</h2>
           <button type="button" onClick={onClose} className="rounded p-1 text-muted" aria-label="閉じる"><X className="size-4" aria-hidden /></button>

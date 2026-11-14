@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import __version__, app_settings
 from .api import conversations, executors, inputs, projects, runs, sessions, terminals, worktrees
 from .api import settings as settings_api
-from .auth import Auth, OriginCheck, require_user
+from .auth import Auth, OriginCheck, SecurityHeaders, require_user
 from .auth import router as auth_router
 from .config import ROOT, Settings, get_settings
 from .db import make_engine, mark_interrupted, migrate, session_dependency
@@ -93,7 +93,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.state.worktree_lock = asyncio.Lock()
     app.state.external_sessions = ExternalSessions(app.state)
     # Guards against DNS rebinding and cross-site requests: the app will run agents on this machine.
-    app.add_middleware(OriginCheck, allowed_hosts=settings.allowed_hosts())
+    app.add_middleware(SecurityHeaders)
+    app.add_middleware(OriginCheck, allowed_hosts=settings.allowed_hosts(), public_origins=settings.public_origins())
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts())
     app.include_router(health)
     app.include_router(auth_router)

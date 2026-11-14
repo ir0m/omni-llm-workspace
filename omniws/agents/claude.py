@@ -236,6 +236,13 @@ class ClaudeCodeAgent:
         self.usage_file.parent.mkdir(parents=True, exist_ok=True)
         self.usage_file.write_text(json.dumps(data))
 
+    def secret_reads(self) -> list[str]:
+        """Claude Code reads files inside the project without asking, so the app can't show these to the user first.
+        Deny reading secrets and the app's data outright (the rules also cover Grep and Glob)."""
+        data = self.settings.omni_data_dir.resolve()
+        return ["Read(**/.env)", "Read(**/.env.local)", "Read(**/.env.*.local)", "Read(**/.env.production)",
+                "Read(**/*.pem)", "Read(**/*.key)", f"Read(/{data}/**)"]
+
     def permission_handler(self, turn: Turn):
         async def can_use_tool(name: str, data: dict[str, Any], context: Any):
             if name == "TodoWrite":
@@ -271,7 +278,8 @@ class ClaudeCodeAgent:
             prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
             if (instructions := claude_md(turn.cwd)):
                 prompt["append"] = instructions
-            values.update(system_prompt=prompt, can_use_tool=self.permission_handler(turn), permission_mode="default")
+            values.update(system_prompt=prompt, can_use_tool=self.permission_handler(turn), permission_mode="default",
+                          disallowed_tools=self.secret_reads())
         return self.options(**values)
 
     async def run(self, turn: Turn) -> AsyncIterator[Update]:

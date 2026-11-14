@@ -9,6 +9,7 @@ Modes:
 from __future__ import annotations
 
 import re
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from ..config import Settings
@@ -25,6 +26,35 @@ def clamp(mode: str | None, settings: Settings) -> str:
     """The conversation's mode, never looser than OMNI_APPROVAL_MAX."""
     mode = mode if mode in LEVELS else settings.omni_approval_default
     return LEVELS[min(LEVELS.index(mode), LEVELS.index(settings.omni_approval_max))]
+
+
+# Files an agent must never change (or read, where the agent asks) without the user seeing it, even inside the
+# project: secrets, Git internals (hooks and config run programs) and the app's own data.
+SENSITIVE_DIRS = {".git", ".ssh", ".aws", ".gnupg", ".codex", ".claude"}
+SENSITIVE_FILES = {"credentials", "credentials.json", "auth.json", "token", "token.json", "tokens.json", "id_rsa",
+                   "id_ed25519", "id_ecdsa", "id_dsa", ".npmrc", ".netrc", ".pypirc", "secret.key"}
+ENV_EXAMPLES = (".env.example", ".env.sample", ".env.template")
+
+
+def sensitive_path(path: str, cwd: Path | None, settings: Settings) -> bool:
+    for part in PurePosixPath(path).parts:
+        lower = part.lower()
+        if lower in SENSITIVE_DIRS or lower in SENSITIVE_FILES:
+            return True
+        if lower.startswith(".env") and lower not in ENV_EXAMPLES:
+            return True
+        if lower.endswith((".pem", ".key", ".p12", ".pfx", ".keystore")):
+            return True
+    if cwd is not None:
+        try:
+            return (cwd / path).resolve().is_relative_to(settings.omni_data_dir.resolve())
+        except (OSError, ValueError):
+            return False
+    return False
+
+
+def touches_sensitive(request: PermissionRequest, settings: Settings, cwd: Path | None) -> bool:
+    return any(sensitive_path(path, cwd, settings) for path in request.paths)
 
 
 # Chaining, pipes, redirection and substitution: a remembered prefix must not let these through
@@ -82,12 +112,16 @@ def denied_by_env(request: PermissionRequest, settings: Settings) -> str | None:
     return None
 
 
-def decide(request: PermissionRequest, mode: str | None, rules: list[dict[str, Any]], settings: Settings) -> tuple[Verdict, str | None]:
+def decide(request: PermissionRequest, mode: str | None, rules: list[dict[str, Any]], settings: Settings,
+           cwd: Path | None = None) -> tuple[Verdict, str | None]:
     reason = denied_by_env(request, settings)
     if reason:
         return "deny", reason
     # Always confirmed: neither "always allow" nor the approval mode lets these through
     if request.outside_project and outside_limit(request, settings)[1] == "ask":
+        return "ask", None
+    # Secrets, .git and the app's data: neither "always allow" nor auto_edit covers them (only "auto" does)
+    if request.kind != "execute" and touches_sensitive(request, settings, cwd) and clamp(mode, settings) != "auto":
         return "ask", None
     if any(matches(rule, request) for rule in rules):
         return "allow", None

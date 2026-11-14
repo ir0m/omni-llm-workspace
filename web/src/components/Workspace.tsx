@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type AppConfig, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
 import ChatView from './ChatView'
+import { useBackClose } from '../backClose'
 import SettingsDialog from './SettingsDialog'
 import Sidebar from './Sidebar'
 
@@ -43,6 +44,8 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [error, setError] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  useBackClose(drawerOpen, () => setDrawerOpen(false))
+  useBackClose(settingsOpen, () => setSettingsOpen(false))
   const discoveringRef = useRef(false)
   const lastDiscovery = useRef(0)
 

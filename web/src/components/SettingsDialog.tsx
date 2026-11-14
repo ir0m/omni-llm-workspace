@@ -169,7 +169,7 @@ function AccountsPane({ executors, onChanged }: { executors: Executor[]; onChang
               {codex.login.error ? <p className="text-danger">{codex.login.error}</p> : <>
                 <p>次のページを開き、このコードを入力してください。</p>
                 <p className="my-2 select-all font-mono text-2xl tracking-widest">{codex.login.code}</p>
-                {codex.login.url && <a href={codex.login.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent underline">
+                {codex.login.url?.startsWith('https://') && <a href={codex.login.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent underline">
                   {codex.login.url}<ExternalLink className="size-3.5" aria-hidden /></a>}
                 <p className="mt-2 text-xs text-muted">入力が終わると、自動でログイン済みになります。</p>
               </>}
@@ -377,7 +377,8 @@ function PermissionsPane({ onChanged }: { onChanged: () => void }) {
           if (pattern.trim()) save({ omni_shell_deny_extra: [...data.shell_deny_extra, pattern.trim()] })
           setPattern('')
         }}>
-          <input value={pattern} onChange={(event) => setPattern(event.target.value)} placeholder="例: npm publish" aria-label="拒否するコマンドを追加"
+          <input value={pattern} onChange={(event) => setPattern(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault() }} placeholder="例: npm publish" aria-label="拒否するコマンドを追加"
             className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 font-mono text-sm outline-none focus:border-accent" />
           <button type="submit" disabled={!pattern.trim() || pattern.includes(',')} className={button}>追加</button>
         </form>

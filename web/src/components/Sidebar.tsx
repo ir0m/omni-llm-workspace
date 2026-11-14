@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
 import PasskeyDialog from './PasskeyDialog'
+import { useBackClose } from '../backClose'
 
 const COLLAPSED = 'omni.collapsedGroups'
 
@@ -75,6 +76,7 @@ export default function Sidebar(props: Props) {
   const [dragging, setDragging] = useState<{ id: string; group: string } | null>(null)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
   const [passkeys, setPasskeys] = useState(false)
+  useBackClose(passkeys, () => setPasskeys(false))
   const search = query.trim().toLowerCase()
   const shown = props.conversations.filter((item) => item.title.toLowerCase().includes(search))
   const groups = groupConversations(shown, props.projects).filter((group) =>
@@ -259,7 +261,7 @@ function Item({ item, active, draggable, showProject, nativeActions, ...on }: It
           onChange={(event) => setTitle(event.target.value)}
           onBlur={rename}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) rename()
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) rename()
             if (event.key === 'Escape') setRenaming(false)
           }}
           className="m-1 w-full rounded border border-accent bg-bg px-2 py-1 text-sm outline-none"
