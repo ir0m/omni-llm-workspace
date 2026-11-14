@@ -78,6 +78,7 @@ async def claude_entry(agent, refresh: bool) -> dict:
             if not plan:
                 entry["setting"] = "claude auth login"
                 return entry
+            await agent.usage_ready()
             entry.update(label=f"Claude Code（{plan.removeprefix('Claude ')}）", usage=agent.usage())
         entry.update(configured=True, models=[model.to_dict() for model in await agent.list_models()])
     except ProviderError as exc:

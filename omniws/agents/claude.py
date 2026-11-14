@@ -17,10 +17,14 @@ import contextlib
 import difflib
 import json
 import os
+import re
+import shutil
 import time
+from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import claude_agent_sdk as sdk
 
@@ -36,6 +40,10 @@ KINDS = {"Read": "read", "Glob": "search", "Grep": "search", "LS": "read", "Edit
          "Write": "edit", "NotebookEdit": "edit", "Bash": "execute", "BashOutput": "read", "KillShell": "execute",
          "WebFetch": "fetch", "WebSearch": "fetch"}
 WINDOWS = {"five_hour": "5時間", "seven_day": "7日", "seven_day_opus": "7日（Opus）", "seven_day_sonnet": "7日（Sonnet）"}
+# `claude -p /usage` (the CLI's own report, no model call): "Current session: 71% used · resets Nov 14, 4pm (Asia/Tokyo)"
+USAGE_LINE = re.compile(r"^Current (session|week \(([^)]+)\)):\s*(\d+)% used(?:\s*·\s*resets (.+))?$")
+RESET = re.compile(r"^(?:([A-Z][a-z]{2}) (\d{1,2}), )?(\d{1,2})(?::(\d{2}))?\s*(am|pm) \(([^)]+)\)$")
+USAGE_SECONDS = 45
 ERRORS = {401: "auth", 403: "auth", 404: "not_found", 429: "rate_limit", 529: "overloaded", 500: "overloaded"}
 
 
@@ -129,6 +137,51 @@ def claude_md(cwd: Path) -> str | None:
     return text[:CLAUDE_MD_LIMIT] if text else None
 
 
+def parse_reset(text: str, now: float) -> int | None:
+    match = RESET.match(text.strip())
+    if not match:
+        return None
+    month, day, hour, minute, half, zone = match.groups()
+    try:
+        tz = ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    current = datetime.fromtimestamp(now, tz)
+    hour24 = int(hour) % 12 + (12 if half == "pm" else 0)
+    if month:
+        try:
+            when = datetime.strptime(f"{current.year} {month} {day}", "%Y %b %d").replace(
+                hour=hour24, minute=int(minute or 0), tzinfo=tz)
+        except ValueError:
+            return None
+        if when < current - timedelta(days=1):  # "Jan 2" seen in late December
+            when = when.replace(year=current.year + 1)
+    else:
+        when = current.replace(hour=hour24, minute=int(minute or 0), second=0, microsecond=0)
+        if when < current:
+            when += timedelta(days=1)
+    return int(when.timestamp())
+
+
+def parse_usage(text: str, now: float) -> dict[str, dict[str, Any]]:
+    """{"five_hour": {...}, "seven_day": {...}, "seven_day_fable": {...}} from the CLI's /usage report."""
+    windows: dict[str, dict[str, Any]] = {}
+    for line in text.splitlines():
+        match = USAGE_LINE.match(line.strip())
+        if not match:
+            continue
+        kind, scope, percent, reset = match.groups()
+        if kind == "session":
+            key, label = "five_hour", WINDOWS["five_hour"]
+        elif scope == "all models":
+            key, label = "seven_day", WINDOWS["seven_day"]
+        else:
+            key, label = f"seven_day_{re.sub(r'[^a-z0-9]+', '_', scope.lower())}", f"7日（{scope}）"
+        windows[key] = {"usedPercent": int(percent), "resetsAt": parse_reset(reset, now) if reset else None,
+                        "status": None, "at": int(now), "label": label}
+    return windows
+
+
 class ClaudeCodeAgent:
     label = "Claude Code"
 
@@ -216,9 +269,42 @@ class ClaudeCodeAgent:
         except (OSError, ValueError):
             return None
         # Claude sends a percentage only when usage is high; otherwise just a status
-        windows = [{"label": WINDOWS.get(key, key), "usedPercent": value.get("usedPercent"), "resetsAt": value.get("resetsAt"),
+        windows = [{"label": value.get("label") or WINDOWS.get(key, key), "usedPercent": value.get("usedPercent"), "resetsAt": value.get("resetsAt"),
                     "status": value.get("status"), "at": value.get("at")} for key, value in data.get("windows", {}).items()]
         return {"plan": data.get("plan"), "windows": windows} if windows else None
+
+    def cli(self) -> str | None:
+        bundled = Path(sdk.__file__).parent / "_bundled" / "claude"
+        return self.cli_path or (str(bundled) if bundled.is_file() else shutil.which("claude"))
+
+    async def refresh_usage(self) -> None:
+        """Asks the CLI itself for the plan's usage (`/usage` makes no model call), so the meter is exact after
+        every turn. Only the CLI touches the login; the app reads the text it prints."""
+        if self.billing != "subscription" or not self.installed() or not (cli := self.cli()):
+            return
+        try:
+            process = await asyncio.create_subprocess_exec(
+                cli, "-p", "/usage", "--output-format", "json", "--no-session-persistence",
+                cwd=str(Path.home()), env={**os.environ, **self.env(temporary=True)},
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            try:
+                out, _ = await asyncio.wait_for(process.communicate(), USAGE_SECONDS)
+            except TimeoutError:
+                process.kill()
+                return
+            text = json.loads(out).get("result") or ""
+        except (OSError, ValueError, AttributeError):
+            return
+        windows = parse_usage(text, time.time())
+        if not windows:
+            return
+        try:
+            data = json.loads(self.usage_file.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data["windows"] = windows  # the full report replaces what turns sent piecemeal
+        self.usage_file.parent.mkdir(parents=True, exist_ok=True)
+        self.usage_file.write_text(json.dumps(data, ensure_ascii=False))
 
     def remember_limit(self, info: Any) -> None:
         if getattr(info, "rate_limit_type", None) not in WINDOWS:
@@ -285,13 +371,28 @@ class ClaudeCodeAgent:
     async def run(self, turn: Turn) -> AsyncIterator[Update]:
         resume = None if turn.temporary else turn.native_session
         try:
-            async for update in self._run(turn, resume):
-                yield update
-        except _ResumeFailed:
-            if turn.require_resume:
-                raise ProviderError("not_found", "元のセッションを再開できませんでした")
-            async for update in self._run(turn, None):  # the session is gone: start over with the whole conversation
-                yield update
+            try:
+                async for update in self._run(turn, resume):
+                    yield update
+            except _ResumeFailed:
+                if turn.require_resume:
+                    raise ProviderError("not_found", "元のセッションを再開できませんでした")
+                async for update in self._run(turn, None):  # the session is gone: start over with the whole conversation
+                    yield update
+        finally:
+            # In the background: the turn ends at once, and the executor list the screen loads after it
+            # waits for this (see usage_ready), so the meter shows the usage including this turn.
+            self.refreshing = asyncio.get_running_loop().create_task(self.quiet_refresh())
+
+    async def quiet_refresh(self) -> None:
+        with contextlib.suppress(Exception):
+            await self.refresh_usage()
+
+    async def usage_ready(self, timeout: float = 15) -> None:
+        task = getattr(self, "refreshing", None)
+        if task is not None and not task.done():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(task), timeout)
 
     async def _run(self, turn: Turn, resume: str | None) -> AsyncIterator[Update]:
         prompt = turn.prompt if resume else turn.fresh_prompt

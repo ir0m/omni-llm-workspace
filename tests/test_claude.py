@@ -199,3 +199,39 @@ def test_usage_limit_is_not_success_even_if_cli_result_says_success(tmp_path, mo
     with pytest.raises(ProviderError) as caught:
         asyncio.run(check())
     assert caught.value.code == 'rate_limit'
+
+
+def test_usage_report_from_the_cli_is_parsed_and_stored(tmp_path):
+    import asyncio
+    import datetime as dt
+    import json as json_
+    import stat
+    import sys as sys_
+    from omniws.agents.claude import ClaudeCodeAgent, parse_usage
+    from .conftest import make_settings
+
+    now = dt.datetime(2026, 11, 14, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))).timestamp()
+    report = ("You are currently using your subscription\n\nCurrent session: 71% used · resets Nov 14, 4pm (Asia/Tokyo)\n"
+              "Current week (all models): 89% used · resets Nov 17, 2:30pm (Asia/Tokyo)\n"
+              "Current week (Fable): 0% used\n\nWhat's contributing to your usage?\n  91%  Start fresh")
+    windows = parse_usage(report, now)
+    assert windows["five_hour"]["usedPercent"] == 71 and windows["seven_day"]["usedPercent"] == 89
+    assert dt.datetime.fromtimestamp(windows["five_hour"]["resetsAt"], dt.timezone(dt.timedelta(hours=9))).hour == 16
+    assert dt.datetime.fromtimestamp(windows["seven_day"]["resetsAt"], dt.timezone(dt.timedelta(hours=9))).minute == 30
+    assert windows["seven_day_fable"] == {"usedPercent": 0, "resetsAt": None, "status": None, "at": int(now), "label": "7日（Fable）"}
+
+    # The CLI is asked with /usage and no saved session; nothing else is read
+    cli = tmp_path / "fake-claude"
+    cli.write_text(f"#!{sys_.executable}\nimport json, sys\nassert sys.argv[1:] == ['-p', '/usage', '--output-format', 'json', "
+                   f"'--no-session-persistence'], sys.argv\nprint(json.dumps({{'result': {report!r}}}))\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    config = make_settings(tmp_path, omni_allow_claude_subscription=True)
+    agent = ClaudeCodeAgent(config, "subscription", cli_path=str(cli))
+    asyncio.run(agent.refresh_usage())
+    labels = {window["label"]: window["usedPercent"] for window in agent.usage()["windows"]}
+    assert labels == {"5時間": 71, "7日": 89, "7日（Fable）": 0}
+    assert json_.loads(config.omni_data_dir.joinpath("claude-usage.json").read_text())["windows"]["five_hour"]["usedPercent"] == 71
+    # API billing has no plan usage to ask for
+    api = ClaudeCodeAgent(make_settings(tmp_path / "api"), "api", cli_path=str(cli))
+    asyncio.run(api.refresh_usage())
+    assert api.usage() is None
