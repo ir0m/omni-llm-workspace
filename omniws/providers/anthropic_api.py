@@ -51,6 +51,9 @@ def request_options(request: ChatRequest, model: ModelInfo | None) -> dict[str, 
         options["thinking"] = {"type": "adaptive", "display": "summarized"}
     if request.effort and (model is None or request.effort in model.efforts):
         options["output_config"] = {"effort": request.effort}
+    if request.tools:
+        options["tools"] = [{"name": tool["name"], "description": tool["description"], "input_schema": tool["schema"]}
+                            for tool in request.tools]
     if request.model.startswith(FALLBACK_PREFIXES):
         options["betas"] = [FALLBACK_BETA]
         options["fallbacks"] = "default"
@@ -74,6 +77,19 @@ def provider_error(exc: Exception) -> ProviderError:
     return ProviderError("unknown", type(exc).__name__)
 
 
+def turn_block(block: Any) -> dict[str, Any]:
+    """A block of the model's turn, as it goes back to the API with the tool results."""
+    if block.type == "text":
+        return {"type": "text", "text": block.text}
+    if block.type == "thinking":
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}
+    if block.type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": block.data}
+    if block.type == "tool_use":
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    return block.model_dump(exclude_none=True)
+
+
 class AnthropicProvider:
     id = "anthropic"
     label = "Claude API"
@@ -81,6 +97,12 @@ class AnthropicProvider:
 
     def __init__(self, api_key: str, client: anthropic.AsyncAnthropic | None = None) -> None:
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=2)
+
+    @staticmethod
+    def tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": result["id"],
+                                              "content": result["text"] or "(結果なし)", "is_error": result["is_error"]}
+                                             for result in results]}]
 
     async def list_models(self) -> list[ModelInfo]:
         try:
@@ -104,6 +126,10 @@ class AnthropicProvider:
         if final.stop_reason == "refusal":
             details = getattr(final, "stop_details", None)
             raise ProviderError("refused", getattr(details, "explanation", None) or "応答が拒否されました")
+        if final.stop_reason == "tool_use":
+            request.tool_calls = [{"id": block.id, "name": block.name, "arguments": block.input}
+                                  for block in final.content if block.type == "tool_use"]
+            request.assistant_turn = {"role": "assistant", "content": [turn_block(block) for block in final.content]}
         usage = final.usage
         yield usage_update(input_tokens=usage.input_tokens or 0, output_tokens=usage.output_tokens or 0,
                            cache_read_tokens=getattr(usage, "cache_read_input_tokens", None) or 0,

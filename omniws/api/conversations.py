@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -12,7 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from .. import projects, native_actions
+from .. import mcp_tools, native_actions, projects
+from ..auth import load_secret
 from ..agents import policy
 from ..agents.base import Agent, Turn
 from ..agents.handover import build_prompt, turn_items
@@ -35,6 +36,17 @@ def db(request: Request):
     yield from request.app.state.get_session()
 
 
+def mcp_servers_for(state, off: list[str]) -> list[dict[str, Any]]:
+    """The MCP servers a Chat turn uses: enabled in settings, allowed by .env, not turned off here."""
+    from ..app_settings import read
+    if not state.settings.omni_allow_mcp:
+        return []
+    with state.sessions() as session:
+        servers = read(session, mcp_tools.KEY, [])
+    return [server for server in servers if server.get("enabled", True) and server["id"] not in off
+            and mcp_tools.usable(server, state.settings)]
+
+
 def conversation_dict(conversation: Conversation, runs: RunManager) -> dict[str, Any]:
     active = runs.active_for(conversation.id)
     return {"id": conversation.id, "title": conversation.title, "mode": conversation.mode,
@@ -42,6 +54,7 @@ def conversation_dict(conversation: Conversation, runs: RunManager) -> dict[str,
             "project": conversation.project, "temporary": conversation.temporary, "pinned": conversation.pinned,
             "hidden": conversation.hidden, "forked_from": conversation.forked_from, "target": conversation.target,
             "approval_mode": conversation.approval_mode, "allow_rules": conversation.allow_rules or [],
+            "mcp_off": conversation.mcp_off or [],
             "created_at": conversation.created_at, "updated_at": conversation.updated_at,
             "active_run": active.id if active else None}
 
@@ -74,6 +87,7 @@ class NewConversation(BaseModel):
     mode: Literal["chat", "code"] = "chat"
     project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
+    mcp_off: list[Annotated[str, Field(max_length=20)]] = Field(default_factory=list, max_length=100)
 
 
 class ConversationPatch(BaseModel):
@@ -86,6 +100,7 @@ class ConversationPatch(BaseModel):
     project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
     clear_allow_rules: bool = False
+    mcp_off: list[Annotated[str, Field(max_length=20)]] | None = Field(default=None, max_length=100)
 
 
 class Order(BaseModel):
@@ -121,6 +136,7 @@ def create_conversation(body: NewConversation, request: Request, session: Sessio
     approval = policy.clamp(body.approval_mode, request.app.state.settings) if body.approval_mode else None
     conversation = Conversation(id=str(uuid.uuid4()), title=body.title.strip(), temporary=body.temporary,
                                 mode=body.mode, project=project, approval_mode=approval, sort_key=float(now),
+                                mcp_off=list(dict.fromkeys(body.mcp_off)),
                                 created_at=now, updated_at=now)
     session.add(conversation)
     session.commit()
@@ -289,8 +305,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
     agent_model = body.model
     if mode == "code" and (not project or not projects.exists(settings.omni_projects_dir, project)):
         raise HTTPException(status_code=400, detail="project_not_found")
-    if body.provider in DIRECT_AGENTS and body.provider in state.agents:
-        agent = state.agents[body.provider]  # Codex, Claude Code: Chat and Code
+    if body.provider in (*DIRECT_AGENTS, "agy") and body.provider in state.agents:
+        agent = state.agents[body.provider]  # Codex, Claude Code, agy: Chat and Code
         if not agent.installed():
             raise HTTPException(status_code=400, detail="agent_not_installed")
     elif mode == "chat":
@@ -335,6 +351,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                                         "rules": list(conversation.allow_rules or [])}
             if agent is None:
                 prepared["history"] = chat_history(earlier + [user])
+                prepared["mcp_off"] = list(conversation.mcp_off or [])
                 return prepared
             record = next((item for item in conversation.agent_sessions if item.agent == agent.id), None)
             native = record.native_id if record and not conversation.temporary else None
@@ -430,6 +447,23 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
 
     if agent is None:
         chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort)
+
+        servers = mcp_servers_for(state, prepared["mcp_off"]) if hasattr(provider, "tool_results") else []
+        if servers:
+            rules = prepared["rules"]
+            always = {f"{server['id']}/{tool}" for server in servers for tool in server.get("always_allow", [])}
+            secret = load_secret(settings)
+
+            async def chat_stream_with_tools(run: Run):
+                async with mcp_tools.ToolSet(servers, secret) as tools:
+                    async for update in mcp_tools.chat_with_tools(provider, chat_request, model_info, tools, run.ask):
+                        yield update
+
+            run = runs.start(conversation_id, reply_id, chat_stream_with_tools, save,
+                             decide=lambda permission: policy.decide_mcp(permission, rules, settings, always))
+            run.rules = rules
+            run.after_finish = after_finish
+            return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
 
         def chat_stream(run: Run):
             return provider.stream(chat_request, model_info)

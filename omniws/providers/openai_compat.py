@@ -78,11 +78,21 @@ class OpenAICompatProvider:
             body["reasoning_effort"] = request.effort
         if self.id == "openrouter":
             body["usage"] = {"include": True}
+        if request.tools:
+            body["tools"] = [{"type": "function", "function": {"name": tool["name"], "description": tool["description"],
+                                                                "parameters": tool["schema"]}} for tool in request.tools]
         return body
+
+    @staticmethod
+    def tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{"role": "tool", "tool_call_id": result["id"], "content": result["text"] or "(結果なし)"}
+                for result in results]
 
     async def stream(self, request: ChatRequest, model: ModelInfo | None = None) -> AsyncIterator[Update]:
         usage: dict[str, Any] | None = None
         finish: str | None = None
+        text: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}  # tool calls arrive in pieces, keyed by index
         async with self.client() as client:
             try:
                 async with client.stream("POST", f"{self.base_url}/chat/completions", json=self.body(request)) as response:
@@ -107,12 +117,34 @@ class OpenAICompatProvider:
                             if isinstance(reasoning, str) and reasoning:
                                 yield thought_chunk(reasoning)
                             if isinstance(delta.get("content"), str) and delta["content"]:
+                                text.append(delta["content"])
                                 yield message_chunk(delta["content"])
+                            for piece in delta.get("tool_calls") or []:
+                                call = calls.setdefault(int(piece.get("index") or 0), {"id": None, "name": "", "arguments": ""})
+                                call["id"] = piece.get("id") or call["id"]
+                                function = piece.get("function") or {}
+                                call["name"] += function.get("name") or ""
+                                call["arguments"] += function.get("arguments") or ""
                             finish = choice.get("finish_reason") or finish
             except httpx.HTTPError as exc:
                 raise ProviderError("network", f"{self.label} との通信が切れました") from exc
         if finish == "content_filter":
             raise ProviderError("refused", "応答がフィルタされました")
+        if calls and request.tools:
+            ordered = [calls[index] for index in sorted(calls)]
+            for number, call in enumerate(ordered):
+                call["id"] = call["id"] or f"call_{number}"  # some services leave the id out
+            request.assistant_turn = {"role": "assistant", "content": "".join(text) or None, "tool_calls": [
+                {"id": call["id"], "type": "function", "function": {"name": call["name"], "arguments": call["arguments"] or "{}"}}
+                for call in ordered]}
+            request.tool_calls = []
+            for call in ordered:
+                try:
+                    arguments = json.loads(call["arguments"] or "{}")
+                except ValueError:
+                    arguments = {}
+                request.tool_calls.append({"id": call["id"], "name": call["name"],
+                                           "arguments": arguments if isinstance(arguments, dict) else {}})
         usage = usage or {}
         prompt_details = usage.get("prompt_tokens_details") or {}
         completion_details = usage.get("completion_tokens_details") or {}

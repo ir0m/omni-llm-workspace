@@ -222,13 +222,13 @@ class OpenCodeAgent:
             if self.connection:
                 await self.connection.close()
             if not self.executable:
-                raise ProviderError("not_found", "OpenCode がインストールされていません")
-            connection = AcpConnection([self.executable, "acp", "--pure"], env, Path.home())
+                raise ProviderError("not_found", f"{self.label} がインストールされていません")
+            connection = AcpConnection(self.acp_argv(), env, Path.home())
             try:
                 await connection.start()
             except (AcpError, OSError) as exc:
                 await connection.close()
-                raise ProviderError("unknown", f"OpenCode を起動できません: {exc}") from exc
+                raise ProviderError("unknown", f"{self.label} を起動できません: {exc}") from exc
             self.connection, self.config_key, self.open_sessions = connection, key, {}
             return connection
 
@@ -247,13 +247,36 @@ class OpenCodeAgent:
                     await connection.call(method, {"sessionId": turn.native_session, **params}, timeout=60)
                     self.open_sessions[turn.native_session] = None
                     return turn.native_session, turn.prompt
-        result = await connection.call("session/new", params, timeout=60)
+        try:
+            result = await connection.call("session/new", params, timeout=60)
+        except AcpError as exc:
+            raise self.session_error(exc) from exc
         session_id = result["sessionId"]
         current = next((option.get("currentValue") for option in result.get("configOptions") or []
                         if option.get("id") == "model"), None)
+        self.remember_options(result)
         self.open_sessions[session_id] = current
         turn.on_session(session_id)
         return session_id, turn.fresh_prompt
+
+    def acp_argv(self) -> list[str]:
+        return [self.executable or "opencode", "acp", "--pure"]
+
+    def remember_options(self, result: dict[str, Any]) -> None:
+        """What session/new said about the session (models, modes). OpenCode's models come from the registry."""
+
+    def session_error(self, exc: AcpError) -> ProviderError:
+        return ProviderError("unknown", exc.message or f"{self.label} のセッションを開始できません")
+
+    async def select_model(self, connection: AcpConnection, session_id: str, turn: Turn) -> None:
+        if self.open_sessions.get(session_id) == turn.model:
+            return
+        try:
+            await connection.call("session/set_config_option",
+                                  {"sessionId": session_id, "configId": "model", "value": turn.model}, timeout=30)
+        except AcpError as exc:
+            raise ProviderError("not_found", f"{self.label} でこのモデルを使えません: {turn.model}") from exc
+        self.open_sessions[session_id] = turn.model
 
     async def handle(self, turn: Turn, method: str, params: dict[str, Any]) -> Any:
         if method == "session/request_permission":
@@ -294,13 +317,7 @@ class OpenCodeAgent:
         session_id = None
         try:
             session_id, prompt = await self.session(connection, turn)
-            if self.open_sessions.get(session_id) != turn.model:
-                try:
-                    await connection.call("session/set_config_option",
-                                          {"sessionId": session_id, "configId": "model", "value": turn.model}, timeout=30)
-                except AcpError as exc:
-                    raise ProviderError("not_found", f"OpenCode でこのモデルを使えません: {turn.model}") from exc
-                self.open_sessions[session_id] = turn.model
+            await self.select_model(connection, session_id, turn)
             queue = connection.listen(session_id, lambda method, params: self.handle(turn, method, params))
             prompting = asyncio.create_task(connection.call(
                 "session/prompt", {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]}))
@@ -323,7 +340,7 @@ class OpenCodeAgent:
                 try:
                     result = await prompting
                 except AcpError as exc:
-                    raise ProviderError("unknown", exc.message or "OpenCode でエラーが起きました") from exc
+                    raise ProviderError("unknown", exc.message or f"{self.label} でエラーが起きました") from exc
             except asyncio.CancelledError:
                 connection.notify("session/cancel", {"sessionId": session_id})
                 with contextlib.suppress(Exception):

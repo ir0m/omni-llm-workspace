@@ -11,13 +11,14 @@
 
 ## できること
 
-- **実行元の切り替え**: Anthropic・OpenAI・Gemini・OpenRouter のAPI、Ollama などのローカルLLM、Codex（ChatGPTのサブスクリプション）、Claude Code（サブスクリプションまたはAPI）。
+- **実行元の切り替え**: Anthropic・OpenAI・Gemini・OpenRouter のAPI、Ollama などのローカルLLM、Codex（ChatGPTのサブスクリプション）、Claude Code（サブスクリプションまたはAPI）、Antigravity CLI（agy）。
 - **承認**: エージェントがコマンドの実行やファイルの編集をする前に、画面で確認できます。どこまで自動にするかは、会話ごとに選べます。
 - **CLIの会話の取り込み**: ターミナルで使った Codex・Claude Code の会話を一覧に表示し、その続きをアプリから進められます。
 - **ファイルと差分**: Code の画面で、プロジェクトのファイルと、コミットしていない変更を見られます。
 - **端末**: Code の右パネルから対話型シェルを使えます。スマホでは全画面で開きます。専用の許可が必要です。
 - **並列作業**: git worktree ごとに会話を作り、別々の指示、または同じ指示を複数の実行元へ送れます。返答と開始地点からの差分を比較できます。
 - **使用率**: サブスクリプションの使用率と、会話の文脈の使用量を表示します。
+- **MCP ツール**: Chat（API・ローカルのモデル）で MCP サーバーのツールを使えます。ツールを使うたびに確認します。
 
 ## 必要なもの
 
@@ -56,6 +57,7 @@ uv sync
 
 - ChatGPT（Codex）: `codex login`
 - Claude（Claude Code）: `claude auth login` を実行し、`.env` の `OMNI_ALLOW_CLAUDE_SUBSCRIPTION=true` で有効にします。アプリは Claude.ai の資格情報を扱わず、CLI自身のログインだけを使います。利用は個人の責任で行ってください。
+- Google（Antigravity CLI）: `agy` をインストールして端末でログインし、`.env` の `OMNI_ALLOW_AGY=true` で有効にします。`agy acp` で Chat と Code に使います。Antigravity の規約では外部のツールからの利用の扱いがはっきりしないため、利用は個人の責任で行ってください。アプリは Google の資格情報を扱いません。
 
 ### 権限
 
@@ -73,6 +75,12 @@ Code でエージェントができることの上限は `.env` で決まりま�
 - `OMNI_ALLOW_NATIVE_SESSION_CHANGES`: CLI側の改名・分岐・明示的な削除を許すか。既定は `true`。
 
 `.env` などの秘密情報、鍵ファイル、`.git` の中、アプリのデータは、`auto` 以外では常に確認します（「常に許可」や `auto_edit` でも自動にはなりません）。Claude Code には、`.env` と鍵ファイル、アプリのデータの読み取りを許可しません。
+
+### MCP ツール
+
+`.env` の `OMNI_ALLOW_MCP=true` で有効になります。サーバー上でコマンドを起動するローカルのサーバー（stdio）は、さらに `OMNI_ALLOW_MCP_STDIO=true` が必要です。
+
+サーバーは設定画面の「MCP ツール」で追加します。トークンなどの環境変数・ヘッダーは暗号化して保存し、画面には表示しません。ツールを使うたびに確認します。会話ごとに「常に許可」を選べるほか、設定画面でツールごとに常に許可できます。会話ごとに、入力欄の上のボタンで使うサーバーを外せます。ツールに対応していないモデルは、ツールなしで返答します。
 
 ### 端末・並列作業・CLIの会話
 

@@ -57,6 +57,7 @@ export type AppConfig = {
   shell_deny: string[]
   allow_opencode_free: boolean
   allow_claude_subscription: boolean
+  allow_mcp?: boolean
 }
 
 export type ErrorInfo = { code: string; message: string }
@@ -94,7 +95,9 @@ export type Conversation = {
   forked_from: string | null
   target: Target | null
   approval_mode: ApprovalMode | null
-  allow_rules: { kind: string; prefix?: string; outside?: boolean }[]
+  allow_rules: { kind: string; prefix?: string; outside?: boolean; tool?: string }[]
+  /** MCP servers this conversation doesn't use */
+  mcp_off?: string[]
   created_at: number
   updated_at: number
   active_run: string | null
@@ -190,6 +193,9 @@ export type PermissionValues = {
   omni_allow_git_clone: boolean
   omni_allow_claude_subscription: boolean
   omni_allow_opencode_free: boolean
+  omni_allow_agy: boolean
+  omni_allow_mcp: boolean
+  omni_allow_mcp_stdio: boolean
 }
 export type Permissions = {
   values: PermissionValues
@@ -237,7 +243,36 @@ export type SessionCounts = {
   confirm_word: string
 }
 
-export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null }
+export type McpTool = { name: string; description: string; read_only: boolean }
+export type McpServer = {
+  id: string
+  name: string
+  transport: 'stdio' | 'http'
+  command: string
+  args: string[]
+  url: string
+  env_keys: string[]
+  header_keys: string[]
+  enabled: boolean
+  always_allow: string[]
+  tools: McpTool[]
+  usable: boolean
+}
+export type McpSettings = { allowed: boolean; allow_stdio: boolean; servers: McpServer[] }
+/** A server from the form. Secrets: a string sets the value, null removes it, a missing key keeps it. */
+export type McpServerInput = {
+  name?: string
+  transport?: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string | null>
+  headers?: Record<string, string | null>
+  enabled?: boolean
+  always_allow?: string[]
+}
+
+export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null; mcp_off?: string[] }
 
 const DETAIL_TEXT: Record<string, string> = {
   conversation_not_found: 'この会話は見つかりません（削除された可能性があります）',
@@ -324,10 +359,15 @@ export const api = {
   sessionCounts: () => request<SessionCounts>('GET', '/api/settings/sessions'),
   deleteAllConversations: (confirm: string) =>
     request<{ deleted: number }>('POST', '/api/settings/conversations/delete-all', { confirm }),
+  mcp: () => request<McpSettings>('GET', '/api/settings/mcp'),
+  addMcp: (server: McpServerInput) => request<McpSettings>('POST', '/api/settings/mcp', server),
+  changeMcp: (id: string, server: McpServerInput) => request<McpSettings>('PUT', `/api/settings/mcp/${encodeURIComponent(id)}`, server),
+  removeMcp: (id: string) => request<McpSettings>('DELETE', `/api/settings/mcp/${encodeURIComponent(id)}`),
+  inspectMcp: (id: string) => request<{ ok: boolean; error: string | null; tools: McpTool[] }>('POST', `/api/settings/mcp/${encodeURIComponent(id)}/inspect`),
   discoverSessions: () => request<{ added: number; errors: string[] }>('POST', '/api/sessions/discover'),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
-  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode'>> & { project?: string; clear_allow_rules?: boolean }) =>
+  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode' | 'mcp_off'>> & { project?: string; clear_allow_rules?: boolean }) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   remove: (id: string, native = false) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}?native=${native}`),
   fork: (id: string, messageId?: string) =>

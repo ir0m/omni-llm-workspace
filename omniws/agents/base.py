@@ -27,6 +27,7 @@ class PermissionRequest:
     paths: list[str] = field(default_factory=list)
     diff: str | None = None
     outside_project: bool = False
+    tool: str | None = None  # an MCP tool: "<server id>/<tool name>"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -6,6 +6,7 @@ import { DiffView } from './ToolCard'
 const ACTION: Record<string, string> = {
   execute: 'コマンドを実行します', edit: 'ファイルを編集します', delete: 'ファイルを削除します', move: 'ファイルを移動します',
   read: 'ファイルを読みます', search: '検索します', fetch: 'Webから取得します', other: '操作をします',
+  mcp: 'MCP ツールを使います',
 }
 
 // Same rule as the server: chained, piped or redirected commands are never remembered
@@ -16,6 +17,7 @@ function alwaysLabel(ask: PermissionAsk): string | null {
     if (!ask.command || SHELL_CONTROL.test(ask.command)) return null
     return `「${ask.command.trim().split(/\s+/).slice(0, 2).join(' ')}」で始まるコマンドを常に許可`
   }
+  if (ask.kind === 'mcp') return 'この会話ではこのツールを常に許可'
   if (ask.kind === 'edit') return ask.outside_project ? 'プロジェクト外の編集も常に許可' : 'この会話では編集を常に許可'
   return 'この会話では常に許可'
 }
@@ -40,7 +42,10 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
       {/* Long commands and diffs scroll here, so the answer buttons always stay on screen */}
       <div className="min-h-0 shrink overflow-y-auto overscroll-contain">
         {ask.command && (
-          <pre className="mt-2 whitespace-pre-wrap break-all rounded-lg bg-raised px-3 py-2 font-mono text-sm">$ {ask.command}</pre>
+          <>
+            {ask.kind === 'mcp' && <p className="mt-2 break-all font-mono text-sm font-medium">{ask.title}</p>}
+            <pre className="mt-2 whitespace-pre-wrap break-all rounded-lg bg-raised px-3 py-2 font-mono text-sm">{ask.kind === 'mcp' ? '' : '$ '}{ask.command}</pre>
+          </>
         )}
         {ask.paths.length > 0 && !ask.command && (
           <p className="mt-2 truncate font-mono text-sm">{ask.paths.join(', ')}</p>
@@ -52,7 +57,8 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
           </div>
         )}
         <p className={`mt-2 text-xs ${ask.outside_project ? 'text-danger' : 'text-muted'}`}>
-          {ask.outside_project ? '⚠ プロジェクトの外を対象にしています' : `場所: ${project ?? '—'}`}
+          {ask.kind === 'mcp' ? '入力の内容がこのツールに送られます'
+            : ask.outside_project ? '⚠ プロジェクトの外を対象にしています' : `場所: ${project ?? '—'}`}
         </p>
       </div>
       {denying ? (

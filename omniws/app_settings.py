@@ -20,7 +20,8 @@ OUTSIDE = ("deny", "ask", "mode")
 ORDERED = {"omni_approval_default": LEVELS, "omni_approval_max": LEVELS,
            "omni_outside_read": OUTSIDE, "omni_outside_write": OUTSIDE}
 SWITCHES = ("omni_allow_native_session_changes", "omni_allow_terminal", "omni_allow_shell", "omni_allow_network", "omni_allow_project_create", "omni_allow_git_clone",
-            "omni_allow_claude_subscription", "omni_allow_opencode_free")
+            "omni_allow_claude_subscription", "omni_allow_opencode_free", "omni_allow_agy", "omni_allow_mcp",
+            "omni_allow_mcp_stdio")
 DENY_EXTRA = "omni_shell_deny_extra"
 PERMISSIONS = "permissions"
 MODEL_DEFAULTS = "model_defaults"

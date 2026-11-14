@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import __version__, app_settings, projects
+from .. import __version__, app_settings, mcp_tools, projects
+from ..auth import load_secret
 from ..agents.jsonrpc import RpcError
 from ..external_sessions import remember_deleted
 from ..models import Conversation, ExternalSession
@@ -274,3 +275,86 @@ def delete_all(body: DeleteAll, request: Request, session: Session = Depends(db)
         deleted += 1
     session.commit()
     return {"deleted": deleted}
+
+
+# --- MCP servers (Chat tools) -----------------------------------------------------------------------------
+
+def mcp_view(state, servers: list[dict[str, Any]]) -> dict[str, Any]:
+    settings = state.settings
+    return {"allowed": settings.omni_allow_mcp, "allow_stdio": settings.omni_allow_mcp_stdio,
+            "servers": [{**mcp_tools.public(server), "usable": mcp_tools.usable(server, settings)} for server in servers]}
+
+
+def mcp_change(state, server: dict[str, Any]) -> None:
+    if not state.settings.omni_allow_mcp:
+        raise failure(403, "not_allowed", "MCP は .env の OMNI_ALLOW_MCP で無効です")
+    if server["transport"] == "stdio" and not state.settings.omni_allow_mcp_stdio:
+        raise failure(403, "not_allowed", "ローカルの MCP サーバーは .env の OMNI_ALLOW_MCP_STDIO で無効です")
+
+
+@router.get("/mcp")
+def get_mcp(request: Request, session: Session = Depends(db)):
+    return mcp_view(request.app.state, app_settings.read(session, mcp_tools.KEY, []))
+
+
+@router.post("/mcp", status_code=201)
+def add_mcp(body: dict[str, Any], request: Request, session: Session = Depends(db)):
+    state = request.app.state
+    servers = list(app_settings.read(session, mcp_tools.KEY, []))
+    if len(servers) >= 30:
+        raise failure(400, "too_many", "MCP サーバーは30個までです")
+    try:
+        server = mcp_tools.updated(None, body, load_secret(state.settings))
+    except mcp_tools.McpError as exc:
+        raise failure(400, "invalid", exc.message) from exc
+    mcp_change(state, server)
+    app_settings.write(session, mcp_tools.KEY, [*servers, server])
+    session.commit()
+    return mcp_view(state, [*servers, server])
+
+
+@router.put("/mcp/{server_id}")
+def change_mcp(server_id: str, body: dict[str, Any], request: Request, session: Session = Depends(db)):
+    state = request.app.state
+    servers = list(app_settings.read(session, mcp_tools.KEY, []))
+    index = next((i for i, item in enumerate(servers) if item["id"] == server_id), None)
+    if index is None:
+        raise failure(404, "not_found", "この MCP サーバーはありません")
+    try:
+        server = mcp_tools.updated(servers[index], body, load_secret(state.settings))
+    except mcp_tools.McpError as exc:
+        raise failure(400, "invalid", exc.message) from exc
+    if set(body) - {"enabled", "always_allow"}:  # turning off or narrowing is always possible
+        mcp_change(state, server)
+    servers[index] = server
+    app_settings.write(session, mcp_tools.KEY, servers)
+    session.commit()
+    return mcp_view(state, servers)
+
+
+@router.delete("/mcp/{server_id}")
+def remove_mcp(server_id: str, request: Request, session: Session = Depends(db)):
+    servers = [item for item in app_settings.read(session, mcp_tools.KEY, []) if item["id"] != server_id]
+    app_settings.write(session, mcp_tools.KEY, servers)
+    session.commit()
+    return mcp_view(request.app.state, servers)
+
+
+@router.post("/mcp/{server_id}/inspect")
+async def inspect_mcp(server_id: str, request: Request):
+    """Connects once and lists the server's tools (kept for the settings screen)."""
+    state = request.app.state
+    with state.sessions() as session:
+        server = next((item for item in app_settings.read(session, mcp_tools.KEY, []) if item["id"] == server_id), None)
+    if server is None:
+        raise failure(404, "not_found", "この MCP サーバーはありません")
+    mcp_change(state, server)
+    result = await mcp_tools.inspect(server, load_secret(state.settings))
+    if result["ok"]:
+        with state.sessions.begin() as session:
+            servers = list(app_settings.read(session, mcp_tools.KEY, []))
+            for item in servers:
+                if item["id"] == server_id:
+                    item["tools"] = result["tools"]
+            app_settings.write(session, mcp_tools.KEY, servers)
+    return result

@@ -33,9 +33,16 @@ class ModelInfo:
 class ChatRequest:
     model: str
     # Alternating turns starting with the user: {"role": "user" | "assistant", "content": str}
-    messages: list[dict[str, str]]
+    # (with tools, also the provider's own tool-call and tool-result turns)
+    messages: list[dict[str, Any]]
     system: str | None = None
     effort: str | None = None
+    # MCP tools offered to the model: {"name", "description", "schema"}. None: no tools.
+    tools: list[dict[str, Any]] | None = None
+    # Filled by the provider when the model stopped to call tools: {"id", "name", "arguments"},
+    # and the assistant turn to send back with their results
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    assistant_turn: dict[str, Any] | None = None
 
 
 class ProviderError(Exception):

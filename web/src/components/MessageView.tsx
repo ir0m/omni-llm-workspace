@@ -92,7 +92,7 @@ export function Markdown({ text }: { text: string }) {
 }
 
 const AGENT_LABEL: Record<string, string> = {
-  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code',
+  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code', agy: 'Antigravity',
 }
 
 type Piece = { key: string; node: React.ReactNode }

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer, X } from 'lucide-react'
+import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
 import {
   api, ApiError, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
-  type PermissionAsk, type ProjectList, type Target, type Usage,
+  type McpServer, type PermissionAsk, type ProjectList, type Target, type Usage,
 } from '../api'
 import { applyUpdate, mergeUsage } from '../blocks'
 import { askToNotify, notify } from '../notify'
@@ -16,10 +16,11 @@ import ProjectPanel from './ProjectPanel'
 import { useBackClose } from '../backClose'
 
 const LAST_TARGET = 'omni.lastTarget'
+const AGENT_IDS = new Set(['codex', 'claude_code', 'claude_code_api', 'agy', 'opencode_free'])
 const APPROVAL_LABEL: Record<ApprovalMode, string> = { ask: 'すべて確認', auto_edit: '編集は自動', auto: 'すべて自動' }
 const LEVELS: ApprovalMode[] = ['ask', 'auto_edit', 'auto']
 const AGENT_LABEL: Record<string, string> = {
-  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code',
+  opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code', agy: 'Antigravity',
 }
 
 type Live = { runId: string; messageId: string; blocks: Block[]; usage: Usage | null; permissions: PermissionAsk[] }
@@ -98,6 +99,11 @@ export default function ChatView(props: Props) {
   const [sending, setSending] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelRevision, setPanelRevision] = useState(0)
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([])
+  useEffect(() => {
+    if (!config?.allow_mcp || !config.capabilities?.includes('mcp')) return
+    api.mcp().then((data) => setMcpServers(data.servers.filter((server) => server.enabled && server.usable))).catch(() => setMcpServers([]))
+  }, [config])
   // Below lg the panel covers the conversation: the back button closes it
   useBackClose(panelOpen && !window.matchMedia('(min-width: 1024px)').matches, () => setPanelOpen(false))
   const [followup, setFollowup] = useState<string | null>(null)
@@ -262,7 +268,7 @@ export default function ChatView(props: Props) {
     localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next))
   }
 
-  async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; clear_allow_rules?: boolean }) {
+  async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; clear_allow_rules?: boolean; mcp_off?: string[] }) {
     if (!detail) {
       const { clear_allow_rules: _clear, ...rest } = patch
       props.onDraftChange({ ...props.draft, ...rest })
@@ -284,6 +290,9 @@ export default function ChatView(props: Props) {
   }
 
   const executor = executors.find((item) => item.id === target?.provider)
+  // MCP tools: Chat with an API or local model. Agents keep their own MCP settings.
+  const mcpOff = (detail ? detail.mcp_off : props.draft.mcp_off) ?? []
+  const mcpShown = mode === 'chat' && executor && !AGENT_IDS.has(executor.id) ? mcpServers : []
   const blocked = detail?.sync_error ? detail.sync_error
     : conversationId && !detail ? '会話を読み込んでいます'
     : mode === 'code' && !project ? 'プロジェクトを選んでください'
@@ -488,7 +497,7 @@ export default function ChatView(props: Props) {
           <ApprovalCard
             key={ask.requestId}
             ask={ask}
-            agent={AGENT_LABEL[liveAgent ?? ''] ?? 'エージェント'}
+            agent={AGENT_LABEL[liveAgent ?? ''] ?? (ask.kind === 'mcp' ? 'モデル' : 'エージェント')}
             project={project}
             onAnswer={(outcome, reason) => answer(ask, outcome, reason)}
           />
@@ -532,6 +541,21 @@ export default function ChatView(props: Props) {
                 }}><X className="size-4" aria-hidden /></button>
               </div>
             ))}
+          </div>
+        )}
+        {mcpShown.length > 0 && (
+          <div className="mx-auto mb-1.5 flex max-w-3xl flex-wrap items-center gap-1.5 text-xs" aria-label="この会話で使うMCPツール">
+            <Wrench className="size-3.5 text-muted" aria-hidden />
+            {mcpShown.map((server) => {
+              const on = !mcpOff.includes(server.id)
+              return (
+                <button key={server.id} aria-pressed={on} title={on ? `${server.name} を使う（押すと外す）` : `${server.name} を使わない（押すと使う）`}
+                  onClick={() => change({ mcp_off: on ? [...mcpOff, server.id] : mcpOff.filter((id) => id !== server.id) })}
+                  className={`rounded-full border px-2 py-0.5 ${on ? 'border-accent text-accent' : 'border-border text-muted line-through'}`}>
+                  {server.name}
+                </button>
+              )
+            })}
           </div>
         )}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">

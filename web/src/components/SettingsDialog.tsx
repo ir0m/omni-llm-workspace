@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Server, Settings, Shield, UserRound, MessagesSquare, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink, Plus, RefreshCw, Server, Settings, Shield, Trash2, UserRound, MessagesSquare, Wrench, X } from 'lucide-react'
 import {
   api, type Accounts, type ApprovalMode, type Executor, type OutsideLimit, type PermissionValues, type Permissions,
-  type ServerStatus, type SessionCounts, type SubscriptionUsage,
+  type McpServer, type McpServerInput, type McpSettings, type ServerStatus, type SessionCounts, type SubscriptionUsage,
 } from '../api'
 import { UsageRow } from './UsageMeter'
 
-type Category = 'accounts' | 'permissions' | 'server' | 'sessions'
+type Category = 'accounts' | 'permissions' | 'mcp' | 'server' | 'sessions'
 const CATEGORIES: { id: Category; label: string; icon: typeof Settings }[] = [
   { id: 'accounts', label: 'アカウント・CLI', icon: UserRound },
   { id: 'permissions', label: '権限', icon: Shield },
+  { id: 'mcp', label: 'MCP ツール', icon: Wrench },
   { id: 'server', label: 'サーバー', icon: Server },
   { id: 'sessions', label: 'セッション', icon: MessagesSquare },
 ]
@@ -72,6 +73,7 @@ export default function SettingsDialog(props: Props) {
               {category === 'accounts' && <AccountsPane executors={props.executors} onChanged={props.onChanged} />}
               {category === 'permissions' && <PermissionsPane onChanged={props.onChanged} />}
               {category === 'server' && <ServerPane />}
+              {category === 'mcp' && <McpPane onChanged={props.onChanged} />}
               {category === 'sessions' && <SessionsPane onDiscover={props.onDiscover} onDeletedAll={props.onDeletedAll} />}
             </section>
           )}
@@ -298,6 +300,9 @@ const GROUPS: { title: string; note?: string; fields: { field: Field; label: str
       { field: 'omni_allow_native_session_changes', label: 'CLI側セッションの改名・分岐・削除', options: SWITCH },
       { field: 'omni_allow_claude_subscription', label: 'Claude のサブスクリプション', help: '個人利用・自己責任', options: SWITCH },
       { field: 'omni_allow_opencode_free', label: 'OpenCode の無料モデル', help: 'コードが OpenCode のサービスに送られます', options: SWITCH },
+      { field: 'omni_allow_agy', label: 'Antigravity（agy）', help: '個人利用・自己責任。Google の規約上の扱いは未確認', options: SWITCH },
+      { field: 'omni_allow_mcp', label: 'Chat の MCP ツール', options: SWITCH },
+      { field: 'omni_allow_mcp_stdio', label: 'ローカルの MCP サーバー', help: 'サーバー上でプログラムを起動します', options: SWITCH },
     ],
   },
 ]
@@ -545,5 +550,193 @@ function SessionsPane({ onDiscover, onDeletedAll }: { onDiscover: () => void; on
         {result && <p role="status" className="text-ok">{result}</p>}
       </Card>
     </div>
+  )
+}
+
+// --- MCP ツール ------------------------------------------------------------------------------------------------
+
+function McpPane({ onChanged }: { onChanged: () => void }) {
+  const [data, setData] = useState<McpSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [editing, setEditing] = useState<McpServer | 'new' | null>(null)
+  const [checking, setChecking] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.mcp().then(setData).catch((caught) => setError(failure(caught)))
+  }, [])
+
+  async function act(action: () => Promise<McpSettings>) {
+    setError(null)
+    try {
+      setData(await action())
+      onChanged()  // the composer's server buttons follow
+      return true
+    } catch (caught) {
+      setError(failure(caught))
+      return false
+    }
+  }
+
+  async function inspect(server: McpServer) {
+    setChecking(server.id)
+    setError(null)
+    try {
+      const result = await api.inspectMcp(server.id)
+      if (!result.ok) setError(`${server.name}: ${result.error ?? '接続できませんでした'}`)
+      setData(await api.mcp())
+      onChanged()
+    } catch (caught) {
+      setError(failure(caught))
+    } finally {
+      setChecking(null)
+    }
+  }
+
+  if (!data) return error ? <Problem text={error} /> : <Loading />
+  if (editing) {
+    return <McpForm server={editing === 'new' ? null : editing} allowStdio={data.allow_stdio} onCancel={() => setEditing(null)}
+      onSave={async (input) => {
+        const ok = await act(() => editing === 'new' ? api.addMcp(input) : api.changeMcp(editing.id, input))
+        if (ok) setEditing(null)
+        return ok
+      }} error={error} />
+  }
+  return (
+    <div>
+      <p className="mb-3 text-xs text-muted">
+        Chat（API・ローカルのモデル）で使うツールです。ツールを使うたびに確認します。会話ごとに、入力欄の上で使うサーバーを外せます。
+      </p>
+      {!data.allowed && <p className="mb-3 rounded-lg bg-surface p-3 text-sm">MCP は .env の <code>OMNI_ALLOW_MCP=true</code> で使えるようになります。</p>}
+      {data.allowed && !data.allow_stdio && <p className="mb-3 text-xs text-muted">サーバー上でプログラムを起動するローカルのサーバー（stdio）は、.env の <code>OMNI_ALLOW_MCP_STDIO=true</code> が必要です。</p>}
+      <Problem text={error} />
+      {data.servers.map((server) => (
+        <Card key={server.id} title={server.name} aside={
+          <span className="flex items-center gap-1">
+            <select value={String(server.enabled)} aria-label={`${server.name}を使う`} className={select}
+              onChange={(event) => act(() => api.changeMcp(server.id, { enabled: event.target.value === 'true' }))}>
+              <option value="true">有効</option>
+              <option value="false">無効</option>
+            </select>
+            <button onClick={() => { if (window.confirm(`「${server.name}」を削除しますか？`)) act(() => api.removeMcp(server.id)) }}
+              className="rounded p-1.5 text-muted hover:text-danger" aria-label={`${server.name}を削除`}><Trash2 className="size-4" aria-hidden /></button>
+          </span>}>
+          <p className="break-all font-mono text-xs">
+            {server.transport === 'stdio' ? [server.command, ...server.args].join(' ') : server.url}
+          </p>
+          <p className="text-xs text-muted">
+            {server.transport === 'stdio' ? 'ローカル（stdio）' : 'リモート（HTTP）'}
+            {[...server.env_keys, ...server.header_keys].length > 0 && ` · 秘密情報: ${[...server.env_keys, ...server.header_keys].join(', ')}（設定済み）`}
+          </p>
+          {!server.usable && <p className="text-xs text-warn">.env の上限により、今は使えません</p>}
+          {server.tools.length > 0 && (
+            <ul className="divide-y divide-border rounded-lg border border-border">
+              {server.tools.map((tool) => {
+                const always = server.always_allow.includes(tool.name)
+                return (
+                  <li key={tool.name} className="flex items-start gap-2 px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-all font-mono text-xs">{tool.name}{tool.read_only && <span className="ml-2 rounded bg-raised px-1 font-sans text-muted">読み取り</span>}</p>
+                      {tool.description && <p className="line-clamp-2 text-xs text-muted">{tool.description}</p>}
+                    </div>
+                    <label className="flex shrink-0 items-center gap-1 text-xs">
+                      <input type="checkbox" checked={always} onChange={() => act(() => api.changeMcp(server.id, {
+                        always_allow: always ? server.always_allow.filter((name) => name !== tool.name) : [...server.always_allow, tool.name] }))} />
+                      常に許可
+                    </label>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => inspect(server)} disabled={checking !== null || !server.usable} className={button}>
+              {checking === server.id ? '接続中…' : server.tools.length ? 'ツールを再確認' : '接続してツールを確認'}
+            </button>
+            <button onClick={() => setEditing(server)} className={button}>編集</button>
+          </div>
+        </Card>
+      ))}
+      <button onClick={() => setEditing('new')} disabled={!data.allowed} className={`${button} inline-flex items-center gap-1`}>
+        <Plus className="size-4" aria-hidden /> サーバーを追加
+      </button>
+    </div>
+  )
+}
+
+const field = 'mt-1 w-full rounded-lg border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent'
+
+function McpForm({ server, allowStdio, onSave, onCancel, error }: {
+  server: McpServer | null
+  allowStdio: boolean
+  onSave: (input: McpServerInput) => Promise<boolean>
+  onCancel: () => void
+  error: string | null
+}) {
+  const [name, setName] = useState(server?.name ?? '')
+  const [transport, setTransport] = useState<'stdio' | 'http'>(server?.transport ?? (allowStdio ? 'stdio' : 'http'))
+  const [command, setCommand] = useState(server?.command ?? '')
+  const [args, setArgs] = useState((server?.args ?? []).join('\n'))
+  const [url, setUrl] = useState(server?.url ?? '')
+  const existing = transport === 'stdio' ? server?.env_keys ?? [] : server?.header_keys ?? []
+  // Secrets: new values only. Existing ones stay unless removed.
+  const [secrets, setSecrets] = useState<{ key: string; value: string }[]>([])
+  const [removed, setRemoved] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    const values: Record<string, string | null> = Object.fromEntries(removed.map((key) => [key, null]))
+    for (const { key, value } of secrets) if (key.trim() && value) values[key.trim()] = value
+    const input: McpServerInput = transport === 'stdio'
+      ? { name, transport, command: command.trim(), args: args.split('\n').map((item) => item.trim()).filter(Boolean), env: values }
+      : { name, transport, url: url.trim(), headers: values }
+    await onSave(input)
+    setBusy(false)
+  }
+
+  return (
+    <form onSubmit={save} onKeyDown={(event) => { if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault() }}>
+      <Card title={server ? `${server.name} を編集` : 'MCP サーバーを追加'}>
+        <Problem text={error} />
+        <label className="block">名前<input value={name} onChange={(event) => setName(event.target.value)} maxLength={40} className={field} placeholder="例: GitHub" /></label>
+        <label className="block">種類
+          <select value={transport} onChange={(event) => setTransport(event.target.value as 'stdio' | 'http')} className={`${select} mt-1 block`}>
+            <option value="stdio" disabled={!allowStdio}>ローカル（stdio：サーバー上でコマンドを起動）{allowStdio ? '' : '— .env で無効'}</option>
+            <option value="http">リモート（HTTP）</option>
+          </select>
+        </label>
+        {transport === 'stdio' ? <>
+          <label className="block">コマンド<input value={command} onChange={(event) => setCommand(event.target.value)} className={`${field} font-mono`} placeholder="例: npx" /></label>
+          <label className="block">引数（1行に1つ）<textarea value={args} onChange={(event) => setArgs(event.target.value)} rows={3} className={`${field} font-mono`} placeholder={'-y\n@modelcontextprotocol/server-github'} /></label>
+        </> : (
+          <label className="block">URL<input value={url} onChange={(event) => setUrl(event.target.value)} className={`${field} font-mono`} placeholder="https://…/mcp" /></label>
+        )}
+        <div>
+          <p>{transport === 'stdio' ? '環境変数（トークンなど）' : 'ヘッダー（Authorization など）'}</p>
+          <p className="text-xs text-muted">暗号化して保存し、画面には表示しません。</p>
+          {existing.filter((key) => !removed.includes(key)).map((key) => (
+            <div key={key} className="mt-1 flex items-center gap-2 text-xs">
+              <span className="font-mono">{key}</span><span className="text-muted">設定済み</span>
+              <button type="button" onClick={() => setRemoved([...removed, key])} className="text-muted underline">削除</button>
+            </div>
+          ))}
+          {secrets.map((item, index) => (
+            <div key={index} className="mt-1 flex gap-2">
+              <input value={item.key} onChange={(event) => setSecrets(secrets.map((other, i) => i === index ? { ...other, key: event.target.value } : other))}
+                placeholder={transport === 'stdio' ? 'GITHUB_TOKEN' : 'Authorization'} aria-label="名前" className={`${field} mt-0 w-2/5 font-mono`} />
+              <input type="password" value={item.value} autoComplete="off" onChange={(event) => setSecrets(secrets.map((other, i) => i === index ? { ...other, value: event.target.value } : other))}
+                placeholder="値" aria-label="値" className={`${field} mt-0 min-w-0 flex-1`} />
+            </div>
+          ))}
+          <button type="button" onClick={() => setSecrets([...secrets, { key: '', value: '' }])} className="mt-1 text-xs text-accent underline">追加</button>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-muted">やめる</button>
+          <button type="submit" disabled={busy || !name.trim() || (transport === 'stdio' ? !command.trim() : !url.trim())}
+            className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50">保存</button>
+        </div>
+      </Card>
+    </form>
   )
 }

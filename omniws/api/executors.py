@@ -50,6 +50,9 @@ async def list_executors(request: Request, refresh: bool = False):
         agent = state.agents.get(agent_id)
         if agent is not None and (agent.installed() or agent_id == "claude_code"):
             overview.insert(position, await claude_entry(agent, refresh))
+    agy = state.agents.get("agy")
+    if agy is not None and agy.executable:
+        overview.insert(0, await agy_entry(agy))
     # The model and effort a new conversation starts with, chosen in the settings screen
     with state.sessions() as session:
         defaults = app_settings.read(session, app_settings.MODEL_DEFAULTS, {})
@@ -82,6 +85,16 @@ async def claude_entry(agent, refresh: bool) -> dict:
     return entry
 
 
+async def agy_entry(agy) -> dict:
+    """Antigravity CLI with its own Google login. Listed when installed; usable only with OMNI_ALLOW_AGY."""
+    entry = {"id": "agy", "label": "Antigravity（agy）", "kind": "subscription", "configured": agy.installed(),
+             "setting": "OMNI_ALLOW_AGY=true", "error": None, "modes": ["chat", "code"], "code_via": None,
+             "models": [], "usage": None, "note": "個人利用・自己責任"}
+    if agy.installed():
+        entry["models"] = [model.to_dict() for model in await agy.list_models()]
+    return entry
+
+
 async def codex_entry(codex, refresh: bool) -> dict:
     """Codex with the ChatGPT login: its plan, models and usage windows. Not configured until `codex login`."""
     entry = {"id": "codex", "label": "Codex", "kind": "subscription", "configured": False, "setting": "codex login",
@@ -105,7 +118,8 @@ def config(request: Request):
     state = request.app.state
     settings = state.settings
     return {"approval_default": settings.omni_approval_default, "approval_max": settings.omni_approval_max,
-            "capabilities": ["native_sessions", "project_files", "settings", "run_input", "terminal", "worktrees", "native_session_actions"], "restart_required": restart_required(state),
+            "capabilities": ["native_sessions", "project_files", "settings", "run_input", "terminal", "worktrees", "native_session_actions", "agy", "mcp"], "restart_required": restart_required(state),
             "allow_shell": settings.omni_allow_shell, "allow_network": settings.omni_allow_network, "shell_deny": settings.shell_deny(),
             "allow_opencode_free": settings.omni_allow_opencode_free,
-            "allow_claude_subscription": settings.omni_allow_claude_subscription}
+            "allow_claude_subscription": settings.omni_allow_claude_subscription,
+            "allow_mcp": settings.omni_allow_mcp}

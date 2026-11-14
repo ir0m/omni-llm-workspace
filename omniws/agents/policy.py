@@ -72,6 +72,8 @@ def is_simple(command: str) -> bool:
 def rule_for(request: PermissionRequest) -> dict[str, Any] | None:
     """What "always allow in this conversation" remembers: commands by their first two words.
     Compound commands (with ; && | > $( ...) are never remembered."""
+    if request.kind == "mcp":
+        return {"kind": "mcp", "tool": request.tool} if request.tool else None
     if request.kind == "execute":
         if not request.command or not is_simple(request.command):
             return None
@@ -82,6 +84,8 @@ def rule_for(request: PermissionRequest) -> dict[str, Any] | None:
 def matches(rule: dict[str, Any], request: PermissionRequest) -> bool:
     if rule.get("kind") != request.kind:
         return False
+    if request.kind == "mcp":
+        return bool(request.tool) and rule.get("tool") == request.tool
     if request.kind == "execute":
         prefix = rule.get("prefix") or ""
         command = (request.command or "").strip()
@@ -110,6 +114,16 @@ def denied_by_env(request: PermissionRequest, settings: Settings) -> str | None:
         if re.search(r"(^|[\s;&|(`])" + re.escape(pattern) + r"(?=\s|$|[;&|)`])", command):
             return f"OMNI_SHELL_DENY: {pattern}"
     return None
+
+
+def decide_mcp(request: PermissionRequest, rules: list[dict[str, Any]], settings: Settings,
+               always: set[str]) -> tuple[Verdict, str | None]:
+    """An MCP tool in Chat: asked every time unless remembered for the conversation or allowed in settings."""
+    if not settings.omni_allow_mcp:
+        return "deny", "OMNI_ALLOW_MCP=false"
+    if request.tool in always or any(matches(rule, request) for rule in rules):
+        return "allow", None
+    return "ask", None
 
 
 def decide(request: PermissionRequest, mode: str | None, rules: list[dict[str, Any]], settings: Settings,

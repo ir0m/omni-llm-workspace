@@ -14,6 +14,8 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     pending_inputs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Ids of MCP servers this conversation doesn't use
+    mcp_off: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), default="")

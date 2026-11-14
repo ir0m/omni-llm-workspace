@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     omni_allow_claude_subscription: bool = False
     # OpenCode's free models run on OpenCode's service: code is sent there
     omni_allow_opencode_free: bool = False
+    # Antigravity CLI (`agy acp`) with its own Google login. Whether its terms allow use from another app is
+    # unclear: personal use at the user's own risk, off by default
+    omni_allow_agy: bool = False
+    # MCP tools for Chat (API and local models). Local (stdio) servers run programs on this machine
+    omni_allow_mcp: bool = False
+    omni_allow_mcp_stdio: bool = False
 
     # Permissions for Code mode. .env is the upper limit; conversations can only be stricter.
     omni_approval_default: Literal["ask", "auto_edit", "auto"] = "auto_edit"
