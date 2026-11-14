@@ -104,7 +104,8 @@ export type Conversation = {
 }
 
 export type PendingInput = { id: string; run_id: string; text: string; status: 'queued' | 'returned' }
-export type ConversationDetail = Conversation & { messages: Message[]; sync_error?: string | null; pending_inputs?: PendingInput[] }
+export type ContextSummary = { text: string; through_seq: number; source_chars: number; usage: { inputTokens: number; outputTokens: number } }
+export type ConversationDetail = Conversation & { context?: ContextSummary | null; messages: Message[]; sync_error?: string | null; pending_inputs?: PendingInput[] }
 
 export type ModelInfo = {
   id: string
@@ -322,6 +323,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  compactContext: (id: string, target: Target) => request<ContextSummary>('POST', `/api/conversations/${id}/context`, target),
+  compactNativeContext: (id: string, target: Target) => request<{ ok: boolean }>('POST', `/api/conversations/${id}/context/native`, target),
+  clearContext: (id: string) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}/context`),
   branches: (project: string) => request<ProjectBranches>('GET', `/api/projects/${projectPath(project)}/branches`),
   worktrees: (project: string) => request<{ items: Worktree[]; can_create: boolean }>('GET', `/api/projects/${projectPath(project)}/worktrees`),
   createWorktree: (project: string, title: string, base: string) => request<Worktree>('POST', `/api/projects/${projectPath(project)}/worktrees`, { title, base }),

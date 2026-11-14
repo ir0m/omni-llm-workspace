@@ -15,6 +15,9 @@ MAX_TOKENS = 64000
 # Server-side fallback on refusals (beta). The API accepts it only for these model lines.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FALLBACK_PREFIXES = ("claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5")
+# On-demand compaction (beta): the returned signed block replaces the summarized messages.
+COMPACT_BETA = "compact-2026-09-04"
+COMPACT_MAX_TOKENS = 8192
 
 
 def supported(capability: Any) -> bool:
@@ -57,6 +60,8 @@ def request_options(request: ChatRequest, model: ModelInfo | None) -> dict[str, 
     if request.model.startswith(FALLBACK_PREFIXES):
         options["betas"] = [FALLBACK_BETA]
         options["fallbacks"] = "default"
+    if any(isinstance(m.get("content"), list) and any(b.get("type") == "compaction" for b in m["content"]) for m in request.messages):
+        options["betas"] = [*options.get("betas", []), COMPACT_BETA]
     return options
 
 
@@ -91,6 +96,7 @@ def turn_block(block: Any) -> dict[str, Any]:
 
 
 class AnthropicProvider:
+    context_format = "anthropic-v1"
     id = "anthropic"
     label = "Claude API"
     kind = "api"
@@ -130,9 +136,27 @@ class AnthropicProvider:
             request.tool_calls = [{"id": block.id, "name": block.name, "arguments": block.input}
                                   for block in final.content if block.type == "tool_use"]
             request.assistant_turn = {"role": "assistant", "content": [turn_block(block) for block in final.content]}
+        if final.stop_reason == "end_turn":
+            request.replay_messages = [*request.messages, {"role": "assistant", "content": [turn_block(b) for b in final.content]}]
         usage = final.usage
         yield usage_update(input_tokens=usage.input_tokens or 0, output_tokens=usage.output_tokens or 0,
                            cache_read_tokens=getattr(usage, "cache_read_input_tokens", None) or 0,
                            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None) or 0,
                            context_window=model.context_window if model else None,
                            stop_reason=final.stop_reason)
+
+    async def compact(self, request: ChatRequest, model: ModelInfo | None = None) -> list[dict[str, Any]]:
+        """On-demand compaction: same model, system, tools and thinking settings as the conversation."""
+        options = request_options(request, model)
+        options.pop("fallbacks", None)
+        options["betas"] = [COMPACT_BETA]
+        options["compaction"] = {"type": "summarize"}
+        # Non-streaming call; the summary is short, and a large cap would trip the SDK's long-request guard.
+        options["max_tokens"] = COMPACT_MAX_TOKENS
+        try:
+            result = await self.client.beta.messages.create(**options)
+        except anthropic.APIError as exc:
+            raise provider_error(exc) from exc
+        if result.stop_reason != "compaction":
+            raise ProviderError("bad_request", "このモデルでは圧縮できませんでした")
+        return [{"role": "assistant", "content": [b.model_dump(exclude_none=True) for b in result.content]}]

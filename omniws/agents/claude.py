@@ -539,6 +539,23 @@ class ClaudeCodeAgent:
     async def delete_session(self, native_id: str, cwd: Path) -> None:
         await asyncio.to_thread(sdk.delete_session, native_id, directory=str(cwd.resolve()))
 
+    async def compact(self, native_id: str, cwd: Path) -> None:
+        async with asyncio.timeout(120):
+            async with sdk.ClaudeSDKClient(options=self.options(cwd=str(cwd), resume=native_id,
+                    tools=[], env=self.env())) as client:
+                await client.query("/compact")
+                completed = False
+                boundary = False
+                async for message in client.receive_response():
+                    if isinstance(message, sdk.SystemMessage) and message.subtype == "compact_boundary":
+                        boundary = True
+                    if isinstance(message, sdk.ResultMessage):
+                        if message.is_error:
+                            raise ProviderError("unknown", "Claude Code の圧縮に失敗しました")
+                        completed = True
+                if not completed or not boundary:
+                    raise ProviderError("unknown", "圧縮結果を確認できませんでした")
+
     async def forget(self, native_session: str, cwd: Path) -> None:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(sdk.delete_session, native_session, str(cwd))

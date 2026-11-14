@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # API
     anthropic_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
+    omni_openai_responses: bool = False
     openai_base_url: str = "https://api.openai.com/v1"
     gemini_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None

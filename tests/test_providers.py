@@ -133,7 +133,7 @@ class FakeStream:
 
 
 def test_anthropic_stream_maps_events():
-    final = SimpleNamespace(stop_reason="end_turn", usage=SimpleNamespace(
+    final = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="はい")], usage=SimpleNamespace(
         input_tokens=7, output_tokens=2, cache_read_input_tokens=100, cache_creation_input_tokens=5))
     events = [SimpleNamespace(type="thinking", thinking="ふむ"), SimpleNamespace(type="text", text="はい"),
               SimpleNamespace(type="content_block_stop")]

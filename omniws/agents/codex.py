@@ -527,6 +527,35 @@ class CodexAgent:
         await connection.call("thread/delete", {"threadId": native_id}, timeout=30)
         self.open_threads.pop(native_id, None)
 
+    async def compact(self, native_id: str, cwd: Path) -> None:
+        dedicated = CodexAgent(self.settings, executable=self.executable)
+        try:
+            connection = await dedicated.connect()
+            await connection.call("thread/resume", {"threadId": native_id}, timeout=60)
+            async def deny(method, params):
+                return {"decision": "decline"}
+            queue = connection.listen(native_id, deny)
+            try:
+                async with asyncio.timeout(120):
+                    await connection.call("thread/compact/start", {"threadId": native_id}, timeout=30)
+                    compacted = False
+                    while True:
+                        event = await queue.get()
+                        if event is None:
+                            raise ProviderError("network", "Codex との接続が切れました")
+                        if event["method"] == "item/completed" and event["params"].get("item", {}).get("type") == "contextCompaction":
+                            compacted = True
+                        if event["method"] == "turn/completed":
+                            if not compacted or event["params"].get("turn", {}).get("status") != "completed":
+                                raise ProviderError("unknown", "圧縮が完了しませんでした")
+                            break
+            finally:
+                connection.unlisten(native_id)
+            # The persistent thread has changed; the next turn must reload it.
+            self.open_threads.pop(native_id, None)
+        finally:
+            await dedicated.close()
+
     async def forget(self, native_session: str, cwd: Path) -> None:
         with contextlib.suppress(Exception):
             connection = await self.connect()

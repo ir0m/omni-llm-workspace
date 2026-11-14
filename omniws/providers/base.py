@@ -43,6 +43,7 @@ class ChatRequest:
     # and the assistant turn to send back with their results
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     assistant_turn: dict[str, Any] | None = None
+    replay_messages: list[dict[str, Any]] | None = None
 
 
 class ProviderError(Exception):

@@ -8,7 +8,6 @@ from typing import Any
 from ..models import Message
 from ..history import segments
 
-TEXT_LIMIT = 6000
 KIND_LABEL = {"read": "読んだ", "search": "検索した", "edit": "編集した", "delete": "削除した", "move": "移動した",
               "execute": "実行した", "fetch": "取得した"}
 
@@ -28,8 +27,6 @@ def describe(message: Message) -> str:
 
 def describe_part(message: Message, role: str, content: list[dict]) -> str:
     text = "".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
-    if len(text) > TEXT_LIMIT:
-        text = text[:TEXT_LIMIT] + "…（省略）"
     if role == "user":
         return f"[user]\n{text}"
     who = " / ".join(part for part in (message.agent, message.model) if part)

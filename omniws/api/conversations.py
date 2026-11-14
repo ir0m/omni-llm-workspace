@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from .. import context as context_state
 from .. import mcp_tools, native_actions, projects
 from ..auth import load_secret
 from ..agents import policy
@@ -165,6 +166,7 @@ async def get_conversation(conversation_id: str, request: Request):
                 conversation = find(session, conversation_id)
                 return {**conversation_dict(conversation, state.runs), "sync_error": error,
                         "messages": [message_dict(message) for message in conversation.messages],
+                        "context": conversation.context if context_state.valid(conversation.context, conversation.messages) else None,
                         "pending_inputs": conversation.pending_inputs or []}
         return await run_in_threadpool(read)
 
@@ -350,16 +352,25 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                                         "temporary": conversation.temporary, "approval_mode": conversation.approval_mode,
                                         "rules": list(conversation.allow_rules or [])}
             if agent is None:
-                prepared["history"] = chat_history(earlier + [user])
+                format = getattr(provider, "context_format", None)
+                checkpoint = (conversation.native_context or {}).get(context_state.native_key(body.provider, body.model, format))
+                if mcp_servers_for(state, conversation.mcp_off or []):
+                    checkpoint = None
+                prepared["history"] = context_state.replay(earlier, conversation.context, checkpoint,
+                    body.provider, body.model, body.system, format) + chat_history([user])
                 prepared["mcp_off"] = list(conversation.mcp_off or [])
                 return prepared
             record = next((item for item in conversation.agent_sessions if item.agent == agent.id), None)
             native = record.native_id if record and not conversation.temporary else None
             unseen = [message for message in earlier if message.seq > record.synced_seq
                       and not same_origin(message.native_origin, agent.id, native)] if native else earlier
-            prepared.update(native=native, count=len(unseen), prompt=build_prompt(unseen, body.text),
-                            fresh_prompt=build_prompt(earlier, body.text), unseen=turn_items(unseen),
-                            earlier=turn_items(earlier))
+            shared = context_state.selected(earlier, conversation.context, record.synced_seq if native else 0)
+            if native:
+                shared = [m for m in shared if not same_origin(m.native_origin, agent.id, native)]
+            fresh = context_state.selected(earlier, conversation.context)
+            prepared.update(native=native, count=len(unseen), prompt=build_prompt(shared, body.text),
+                            fresh_prompt=build_prompt(fresh, body.text), unseen=turn_items(shared),
+                            earlier=turn_items(fresh))
             external = session.scalar(select(ExternalSession).where(
                 ExternalSession.conversation_id == conversation.id, ExternalSession.agent == agent.id,
                 ExternalSession.native_id == native)) if native else None
@@ -413,7 +424,16 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                                 continue  # turn/start failed: there is no native turn to reconcile
                         pending.append(item)
                     external.pending = pending
-            if agent is None or prepared["temporary"] or not native_box["id"]:
+            if agent is None:
+                if status == "complete" and chat_request.replay_messages is not None and not chat_request.tools:
+                    conversation = session.get(Conversation, conversation_id)
+                    checkpoint = {"provider": body.provider, "model": body.model, "system": body.system,
+                        "format": getattr(provider, "context_format", None), "through_seq": prepared["seq"], "fingerprint": context_state.fingerprint(conversation.messages),
+                        "messages": chat_request.replay_messages}
+                    key = context_state.native_key(body.provider, body.model, getattr(provider, "context_format", None))
+                    conversation.native_context = {**(conversation.native_context or {}), key: checkpoint}
+                return
+            if prepared["temporary"] or not native_box["id"]:
                 return
             store_native(session)
 
@@ -519,3 +539,146 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
     run.after_finish = after_finish
     run.rules = rules
     return {"run_id": run.id, "user_message": prepared["user"], "assistant_message": prepared["reply"]}
+
+
+class CompactContext(BaseModel):
+    provider: str
+    model: str = Field(min_length=1, max_length=200)
+    keep_turns: int = Field(default=3, ge=1, le=20)
+
+
+@router.post("/{conversation_id}/context")
+async def compact_context(conversation_id: str, body: CompactContext, request: Request):
+    import asyncio
+    from ..agents.base import Decision
+    state = request.app.state
+    async with state.external_sessions.lock:
+        if state.runs.active_for(conversation_id):
+            raise HTTPException(409, "返答が終わってから圧縮してください")
+        error = await state.external_sessions.sync(conversation_id)
+        if error:
+            raise HTTPException(409, error)
+        with state.sessions() as session:
+            conversation = find(session, conversation_id)
+            messages = list(conversation.messages)
+            user_indices = [i for i, m in enumerate(messages) if m.role == "user"]
+            if len(user_indices) <= body.keep_turns:
+                raise HTTPException(400, "圧縮する古い会話がありません。直近の会話は原文で残します")
+            prefix = messages[:user_indices[-body.keep_turns]]
+            snapshot = context_state.fingerprint(messages)
+            through = prefix[-1].seq
+            previous_context = conversation.context
+            previous = conversation.context if context_state.valid(conversation.context, messages) else None
+            text = previous["text"] if previous and previous["through_seq"] <= through else ""
+            source = context_state.source_text([m for m in prefix if not text or m.seq > previous["through_seq"]])
+    provider = state.registry.get(body.provider)
+    agent = state.agents.get(body.provider) if body.provider in (*DIRECT_AGENTS, "agy") else None
+    if not provider and not (agent and agent.installed()):
+        raise HTTPException(400, "要約に使える実行元を選んでください")
+    if len(source) > 1_000_000:
+        raise HTTPException(400, "履歴が大きすぎます。会話を分岐して範囲を小さくしてください")
+    usage = {"inputTokens": 0, "outputTokens": 0}
+    async def deny(_):
+        return Decision("deny", message="Summarization only; tools are disabled.")
+    try:
+        async with asyncio.timeout(600):
+            for offset in range(0, len(source), 24000):
+                prompt = context_state.SUMMARY_INSTRUCTIONS + "\n\nExisting handover:\n" + text + "\n\nTranscript continuation:\n" + source[offset:offset + 24000]
+                if provider:
+                    query = ChatRequest(model=body.model, messages=[{"role": "user", "content": prompt}])
+                    stream = provider.stream(query, await state.registry.model(body.provider, body.model))
+                else:
+                    cwd = state.settings.omni_data_dir / "agent-chat"
+                    cwd.mkdir(parents=True, exist_ok=True)
+                    turn = Turn(conversation_id=conversation_id, mode="chat", cwd=cwd, model=body.model,
+                        text=prompt, prompt=prompt, fresh_prompt=prompt, unseen=[], earlier=[], native_session=None,
+                        temporary=True, effort=None, ask_permission=deny, on_session=lambda _: None)
+                    stream = agent.run(turn)
+                result = ""
+                async for update in stream:
+                    if update.get("sessionUpdate") == "agent_message_chunk":
+                        result += update.get("content", {}).get("text", "")
+                    elif update.get("sessionUpdate") == "usage_update":
+                        for key in usage:
+                            usage[key] += update.get(key, 0)
+                if not result.strip() or len(result) > 12000:
+                    raise HTTPException(502, "要約を生成できませんでした。元の履歴は保持されています")
+                text = result.strip()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("summary failed: %s", type(exc).__name__)
+        raise HTTPException(502, "要約に失敗しました。元の履歴は保持されています") from exc
+    async with state.external_sessions.lock:
+        with state.sessions.begin() as session:
+            conversation = find(session, conversation_id)
+            if (state.runs.active_for(conversation_id) or context_state.fingerprint(conversation.messages) != snapshot
+                    or conversation.context != previous_context):
+                raise HTTPException(409, "処理中に会話が更新されました。もう一度圧縮してください")
+            conversation.context = {"text": text, "through_seq": through,
+                "fingerprint": context_state.fingerprint(prefix), "provider": body.provider, "model": body.model,
+                "usage": usage, "created_at": now_ms(), "source_chars": len(context_state.source_text(prefix))}
+            # Native replay is derived from the old prefix; rebuild it from the new portable summary.
+            conversation.native_context = None
+            return conversation.context
+
+
+@router.delete("/{conversation_id}/context")
+async def clear_context(conversation_id: str, request: Request):
+    state = request.app.state
+    async with state.external_sessions.lock:
+        if state.runs.active_for(conversation_id):
+            raise HTTPException(409, "返答が終わってから変更してください")
+        with state.sessions.begin() as session:
+            conversation = find(session, conversation_id)
+            conversation.context = None
+            conversation.native_context = None
+    return {"ok": True}
+
+
+@router.post("/{conversation_id}/context/native")
+async def compact_native_context(conversation_id: str, body: CompactContext, request: Request):
+    import asyncio
+    state = request.app.state
+    # Serializes with sending and imported-session synchronization, including CLI mutations.
+    async with state.external_sessions.lock:
+        if state.runs.active_for(conversation_id):
+            raise HTTPException(409, "返答が終わってから圧縮してください")
+        with state.sessions() as session:
+            conversation = find(session, conversation_id)
+            provider = state.registry.get(body.provider)
+            key = context_state.native_key(body.provider, body.model, getattr(provider, "context_format", None))
+            checkpoint = (conversation.native_context or {}).get(key)
+            record = next((r for r in conversation.agent_sessions if r.agent == body.provider), None)
+            native_id = record.native_id if record else None
+            cwd = projects.project_path(state.settings.omni_projects_dir, conversation.project) if conversation.project else state.settings.omni_data_dir / "agent-chat"
+            snapshot = context_state.fingerprint(conversation.messages)
+            through = conversation.messages[-1].seq if conversation.messages else 0
+            temporary = conversation.temporary
+            checkpoint_valid = context_state.valid(checkpoint, conversation.messages) and checkpoint.get("through_seq") == through
+        provider = state.registry.get(body.provider)
+        agent = state.agents.get(body.provider)
+        try:
+            async with asyncio.timeout(150):
+                if provider and hasattr(provider, "compact"):
+                    if not checkpoint_valid or checkpoint["provider"] != body.provider or checkpoint["model"] != body.model:
+                        raise HTTPException(400, "この実行元・モデルで会話を続けてから圧縮してください")
+                    query = ChatRequest(model=body.model, messages=checkpoint["messages"], system=checkpoint.get("system"))
+                    compacted = await provider.compact(query, await state.registry.model(body.provider, body.model))
+                    with state.sessions.begin() as session:
+                        conversation = find(session, conversation_id)
+                        if context_state.fingerprint(conversation.messages) != snapshot:
+                            raise HTTPException(409, "会話が更新されました")
+                        conversation.native_context = {**(conversation.native_context or {}), key: {**checkpoint, "messages": compacted}}
+                elif agent and hasattr(agent, "compact") and agent.installed() and native_id and not temporary:
+                    if not state.settings.omni_allow_native_session_changes:
+                        raise HTTPException(403, "CLIのセッション変更は無効です")
+                    await agent.compact(native_id, cwd)
+                else:
+                    raise HTTPException(400, "この実行元では専用の圧縮に対応していません。共通要約を使ってください")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.warning("native compaction failed: %s", type(exc).__name__)
+            raise HTTPException(502, "専用の圧縮に失敗しました。モデル・CLIの対応状況を確認してください") from exc
+    return {"ok": True}

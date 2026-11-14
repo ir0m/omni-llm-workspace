@@ -7,6 +7,7 @@ import {
 import { useConversation } from '../useConversation'
 import { askToNotify } from '../notify'
 import ApprovalCard from './ApprovalCard'
+import ContextPanel from './ContextPanel'
 import ExecutorPicker, { firstTarget, startTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
 import PlanBar from './PlanBar'
@@ -477,6 +478,7 @@ export default function ChatView(props: Props) {
             <button onClick={() => setRetry(null)} className="text-muted">やめる</button>
           </div>
         )}
+        {config?.capabilities?.includes('context') && detail && !live && !sending && <ContextPanel detail={detail} target={target} onChanged={() => load(detail.id).catch(onError)} onError={onError} />}
         {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
         {reconnecting && <p role="status" className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">接続が切れました。再接続しています…</p>}
         {!!detail?.pending_inputs?.some((item) => item.status === 'queued') && (

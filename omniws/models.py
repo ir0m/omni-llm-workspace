@@ -13,6 +13,9 @@ class Conversation(Base):
 
     __tablename__ = "conversations"
 
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    native_context: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+
     pending_inputs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     # Ids of MCP servers this conversation doesn't use
     mcp_off: Mapped[list[str]] = mapped_column(JSON, default=list)

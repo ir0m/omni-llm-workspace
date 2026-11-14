@@ -11,6 +11,7 @@ from ..config import Settings
 from .anthropic_api import AnthropicProvider
 from .base import ChatProvider, ModelInfo, ProviderError
 from .openai_compat import OpenAICompatProvider
+from .openai_responses import OpenAIResponsesProvider
 
 MODEL_CACHE_SECONDS = 600
 GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -36,7 +37,7 @@ def build_providers(settings: Settings) -> dict[str, ChatProvider]:
     if settings.anthropic_api_key:
         found["anthropic"] = AnthropicProvider(secret(settings.anthropic_api_key))
     if settings.openai_api_key:
-        found["openai"] = OpenAICompatProvider("openai", KNOWN["openai"][0], "api", settings.openai_base_url,
+        found["openai"] = (OpenAIResponsesProvider if settings.omni_openai_responses else OpenAICompatProvider)("openai", KNOWN["openai"][0], "api", settings.openai_base_url,
                                                secret(settings.openai_api_key))
     if settings.gemini_api_key:
         found["gemini"] = OpenAICompatProvider("gemini", KNOWN["gemini"][0], "api", GEMINI_OPENAI_URL,
