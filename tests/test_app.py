@@ -94,3 +94,30 @@ def test_config_reports_a_screen_rebuilt_after_the_server_started(tmp_path):
         assert client.get("/api/config").json()["restart_required"] is False
         index.write_text("<div id=root></div><!-- new build -->")
         assert client.get("/api/config").json()["restart_required"] is True
+
+
+def test_shutdown_saves_running_replies_before_closing_agents(tmp_path):
+    from .conftest import PASSWORD, FakeProvider, make_settings
+    from .test_runs import new_conversation, start
+    from omniws.models import Message
+    from omniws.providers.registry import Registry
+
+    config = make_settings(tmp_path)
+    provider = FakeProvider(delay=30)
+    closed = []
+
+    class Agent:
+        async def close(self):
+            closed.append(all(run.task.done() for run in app.state.runs.runs.values()))
+
+    app = create_app(config, web_dist=Path("/nonexistent"), registry=Registry(config, {"fake": provider}),
+                     agents={"cleanup": Agent()})
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"password": PASSWORD})
+        started = start(client, new_conversation(client))
+        run = app.state.runs.runs[started["run_id"]]
+        assert not run.done
+    assert closed == [True]
+    assert run.task.done() and run.status == "cancelled"
+    with app.state.sessions() as session:
+        assert session.get(Message, started["assistant_message"]["id"]).status == "cancelled"

@@ -117,7 +117,7 @@ export default function Sidebar(props: Props) {
     if (next.has(key)) next.delete(key)
     else next.add(key)
     setCollapsed(next)
-    localStorage.setItem(COLLAPSED, JSON.stringify([...next]))
+    try { localStorage.setItem(COLLAPSED, JSON.stringify([...next])) } catch { /* storage disabled or full */ }
   }
 
   function move(group: Group, id: string, to: number) {

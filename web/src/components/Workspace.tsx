@@ -29,7 +29,7 @@ function dismissedErrors(): Record<string, number> {
 function rememberDismissed(message: string) {
   const now = Date.now()
   const kept = Object.fromEntries(Object.entries(dismissedErrors()).filter(([, at]) => now - at < DISMISS_FOR))
-  localStorage.setItem(DISMISSED, JSON.stringify({ ...kept, [message]: now }))
+  try { localStorage.setItem(DISMISSED, JSON.stringify({ ...kept, [message]: now })) } catch { /* storage disabled or full */ }
 }
 
 export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) {

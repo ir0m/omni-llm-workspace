@@ -3,7 +3,7 @@
 自分のサーバーで動かす、LLMのワークスペースです。API・サブスクリプション・ローカルLLMを1つの画面で切り替えて使えます。
 
 - **Chat**: プロジェクトに関係なく、モデルと会話します。
-- **Code**: プロジェクトのフォルダで、エージェント（Codex、Claude Code、OpenCode）に作業させます。
+- **Code**: プロジェクトのフォルダで、エージェント（Codex、Claude Code、OpenCode、Antigravity CLI）に作業させます。
 - ChatとCodeは、同じ会話の中で切り替えられます。
 - スマホのブラウザからも使えます。ログインはパスキーです。
 
@@ -35,21 +35,23 @@
 git clone https://github.com/ir0m/omni-llm-workspace.git
 cd omni-llm-workspace
 cp .env.example .env
-uv sync
+uv sync --locked
 (cd web && npm ci && npm run build)
 ```
 
 ## 設定
 
-`.env` に値を書きます。各項目の説明は [.env.example](.env.example) にあります。最低限、次の3つを設定してください。
+`.env` に値を書きます。各項目の説明は [.env.example](.env.example) にあります。最初に、次の3つを確認してください。
 
 | 項目 | 内容 |
 |---|---|
-| `OMNI_SECRET` | ログイン情報の署名に使う長いランダム文字列。`openssl rand -hex 32` などで作ります。 |
+| `OMNI_SECRET` | ログイン情報の署名とMCP認証情報の暗号化に使う長いランダム文字列。`openssl rand -hex 32` などで作ります。未設定ならデータフォルダの `secret.key` に自動生成します。 |
 | `OMNI_PUBLIC_URLS` | ブラウザで開くURL。パスキーは HTTPS か `http://localhost` でだけ使えます。 |
 | `OMNI_PROJECTS_DIR` | Code のプロジェクトを置くフォルダ。この直下のフォルダが、1つずつプロジェクトになります。既存のリポジトリはシンボリックリンクで置けます。画面から作るときに `仕事/顧客A/app` のように `/` で区切ると、5階層までフォルダの中に作れます（途中のフォルダはグループになり、プロジェクトとしては選べません）。 |
 
 使うサービスに合わせて、APIキーやローカルLLMのURLも書きます。
+
+空の値は未設定として扱い、環境変数は `.env` より優先します。`.env` の変更はサーバーの再起動で反映されます。設定画面で変更した権限やモデルの既定値はデータベースに保存され、再起動後も残ります。権限は `.env` の上限を超えて有効にできません。
 
 ### サブスクリプション
 
@@ -82,6 +84,16 @@ Code でエージェントができることの上限は `.env` で決まりま�
 
 サーバーは設定画面の「MCP ツール」で追加します。トークンなどの環境変数・ヘッダーは暗号化して保存し、画面には表示しません。ツールを使うたびに確認します。会話ごとに「常に許可」を選べるほか、設定画面でツールごとに常に許可できます。会話ごとに、入力欄の上のボタンで使うサーバーを外せます。ツールに対応していないモデルは、ツールなしで返答します。
 
+HTTP接続は Streamable HTTP のエンドポイントを指定します。HTTPS、または同じマシンの `http://localhost`・`http://127.0.0.1`・`http://[::1]` が使えます。認証情報はURLのユーザー名・パスワード欄ではなくヘッダーに設定してください。接続確認でツール一覧を取得できます。会話中のサーバー選択は、返答が終わってから変更できます。CLIエージェントのMCP設定とは別の機能です。
+
+### 会話の操作
+
+- キーボードでは Enter で送信、Shift+Enter で改行します。日本語変換中の Enter では送信しません。タッチ端末では Enter は改行になり、送信ボタンで送ります。
+- 入力途中の文章はブラウザ内に保存され、会話の切り替えや再読み込み後に戻ります。別のブラウザ・端末には同期しません。ブラウザの保存機能が無効な場合は、再読み込み後の復元はできません。
+- 応答中も追加指示を送れます。対応するエージェントには作業中に渡し、それ以外は現在の返答が終わったあとに送ります。送れなかった指示は入力欄に戻します。
+- 画面を閉じてもサーバー上の応答は続きます。再度開くと途中から表示します。止める場合は停止ボタンを使います。
+- 「一時」の会話もアプリ内には保存されます。CLI側の記録・メモリを残さないための設定で、履歴を自動削除する機能ではありません。
+
 ### 端末・並列作業・CLIの会話
 
 Code のフォルダボタンから「端末」「並列作業」を開きます。端末は接続ボタンで起動し、タブの切り替え・画面を閉じる操作・通信切断で終了します。リバースプロキシでは WebSocket の転送を有効にしてください。
@@ -96,7 +108,7 @@ CLIと紐付いた会話の改名・分岐は、元のCLI側にも反映しま�
 uv run python -m omniws
 ```
 
-既定では `127.0.0.1:8300` で待ち受けます。外部には直接公開せず、[Tailscale Serve](https://tailscale.com/kb/1312/serve) などのHTTPSのリバースプロキシを使って開いてください。そのURLを `OMNI_PUBLIC_URLS` に書きます。ホスト名が違う場合は、`OMNI_ALLOWED_HOSTS` にも追加します。
+既定では `127.0.0.1:8300` で待ち受けます。外部には直接公開せず、[Tailscale Serve](https://tailscale.com/kb/1312/serve) などのHTTPSのリバースプロキシを使って開いてください。そのURLを `OMNI_PUBLIC_URLS` に書きます。そこに指定したホスト名は自動で許可されます。それ以外のホスト名でアクセスする場合に `OMNI_ALLOWED_HOSTS` を使います。
 
 ### 最初のパスキー登録
 
@@ -116,6 +128,7 @@ uv run python -m omniws passkey-link
 systemd のユーザーサービスの例が [deploy/systemd/omni-llm-workspace.service](deploy/systemd/omni-llm-workspace.service) にあります。`WorkingDirectory` と `ExecStart` を、クローンした場所に合わせて書き換えてから使ってください。
 
 ```sh
+mkdir -p ~/.config/systemd/user
 cp deploy/systemd/omni-llm-workspace.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now omni-llm-workspace
@@ -123,21 +136,59 @@ systemctl --user enable --now omni-llm-workspace
 
 ## 更新
 
+作業中の返答や端末操作を終えてから更新してください。サーバーを再起動すると実行中の処理は中断されます。
+
 ```sh
-git pull
-uv sync
+git pull --ff-only
+uv sync --locked
 (cd web && npm ci && npm run build)
 systemctl --user restart omni-llm-workspace   # 常駐させている場合
 ```
 
 画面を更新してサーバーをまだ再起動していないときは、サイドバーに「反映待ち」と表示されます。
 
+### バックアップ
+
+サーバーを停止してから、`.env` と `OMNI_DATA_DIR`（既定は `./data`）のフォルダ全体を保存してください。会話、パスキーの登録情報、画面の設定、MCP認証情報はここにあります。`OMNI_SECRET` または自動生成された `secret.key` も同じものを復元してください。鍵が変わると保存済みのMCP認証情報を復号できず、再入力が必要です。
+
+プロジェクトのファイル・worktreeと、CLI自身の履歴・ログインは別に保存されています。必要に応じてそちらもバックアップしてください。
+
+### 困ったとき
+
+| 症状 | 確認すること |
+|---|---|
+| サーバーに接続できない | 起動状態と待ち受けURLを確認し、画面の「再接続」を押します。`curl http://127.0.0.1:8300/api/health` でサーバーの応答を確認できます。 |
+| 更新後に操作が使えない・「反映待ち」と表示される | 依存関係の更新、画面のビルド、サーバーの再起動を行い、ブラウザを再読み込みします。 |
+| 実行元・モデルが出ない | 設定画面の「アカウント・CLI」と `.env` を確認し、実行元一覧の更新ボタンを押します。CLIのログインとインストールは、サーバーを動かすOSユーザーで行います。 |
+| パスキーを登録できない | アドレスバーのURLと `OMNI_PUBLIC_URLS` のホスト名・ポートが一致しているか確認します。登録リンクの期限が切れた場合は作り直します。 |
+| 端末が開かない | `OMNI_ALLOW_TERMINAL`、設定画面の権限、リバースプロキシのWebSocket転送を確認します。 |
+| MCPが使えない | 設定画面で接続確認を行い、許可設定、起動コマンドまたはURL、認証情報を確認します。 |
+
+systemdで起動している場合は、`journalctl --user -u omni-llm-workspace -n 100 --no-pager` で直近のログを確認できます。
+
 ## 開発
+
+依存関係はロックファイルに合わせてインストールします。バックエンドと画面の開発サーバーは、別々のターミナルで起動してください。
+
+```sh
+uv sync --locked
+(cd web && npm ci)
+uv run python -m omniws   # バックエンド（既定: 8300）
+(cd web && npm run dev)   # 別のターミナル。/api と端末のWebSocketを8300へ転送
+```
+
+開発画面のURLは起動時に表示されます。パスキーを使う場合は、そのURLも `OMNI_PUBLIC_URLS` に追加してください。開発・テスト用に `OMNI_PASSWORD` でパスワードログインを有効にすることもできます。バックエンドのポートを変えた場合は、画面側の起動時に `OMNI_API=http://127.0.0.1:別のポート` を指定します。
+
+変更後の確認:
 
 ```sh
 uv run pytest -q          # バックエンドのテスト
-(cd web && npm run dev)   # 画面の開発サーバー（/api は 8300 に転送）
+(cd web && npm run build) # TypeScriptの型チェックと本番ビルド
 ```
+
+テストは一時フォルダと模擬の実行元・MCPサーバーを使います。実サービスへの課金を伴うテストではありません。UIを変更した場合は、PC・スマホ幅に加え、会話切り替え、送信失敗からの再試行、通信切断と再接続、承認待ちの操作も確認してください。
+
+コードの入口は、`omniws/api/` がHTTP API、`omniws/agents/` がCLI連携、`omniws/providers/` がAPI・ローカルLLM連携、`omniws/runs.py` が応答の実行・保存、`web/src/useConversation.ts` が会話の読み込み・イベント受信、`web/src/components/` が画面です。
 
 ## ライセンス
 

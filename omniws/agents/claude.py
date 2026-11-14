@@ -147,6 +147,8 @@ def parse_reset(text: str, now: float) -> int | None:
     except (ZoneInfoNotFoundError, ValueError):
         return None
     current = datetime.fromtimestamp(now, tz)
+    if not 1 <= int(hour) <= 12 or not 0 <= int(minute or 0) <= 59:
+        return None
     hour24 = int(hour) % 12 + (12 if half == "pm" else 0)
     if month:
         try:
@@ -155,7 +157,10 @@ def parse_reset(text: str, now: float) -> int | None:
         except ValueError:
             return None
         if when < current - timedelta(days=1):  # "Jan 2" seen in late December
-            when = when.replace(year=current.year + 1)
+            try:
+                when = when.replace(year=current.year + 1)
+            except ValueError:  # February 29 in a non-leap year
+                return None
     else:
         when = current.replace(hour=hour24, minute=int(minute or 0), second=0, microsecond=0)
         if when < current:
@@ -193,6 +198,8 @@ class ClaudeCodeAgent:
         self.info: dict[str, Any] | None = None
         self.info_at = 0.0
         self.usage_file = settings.omni_data_dir / "claude-usage.json"
+        self.refreshing: asyncio.Task | None = None
+        self.refresh_pending = False
 
     def installed(self) -> bool:
         if self.billing == "subscription":
@@ -290,9 +297,17 @@ class ClaudeCodeAgent:
             try:
                 out, _ = await asyncio.wait_for(process.communicate(), USAGE_SECONDS)
             except TimeoutError:
-                process.kill()
                 return
-            text = json.loads(out).get("result") or ""
+            finally:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    await process.wait()
+            if process.returncode != 0:
+                return
+            text = json.loads(out).get("result")
+            if not isinstance(text, str):
+                return
         except (OSError, ValueError, AttributeError):
             return
         windows = parse_usage(text, time.time())
@@ -382,14 +397,25 @@ class ClaudeCodeAgent:
         finally:
             # In the background: the turn ends at once, and the executor list the screen loads after it
             # waits for this (see usage_ready), so the meter shows the usage including this turn.
-            self.refreshing = asyncio.get_running_loop().create_task(self.quiet_refresh())
+            self.schedule_usage_refresh()
+
+    def schedule_usage_refresh(self) -> None:
+        if self.billing != "subscription" or not self.installed():
+            return
+        self.refresh_pending = True
+        if self.refreshing is None or self.refreshing.done():
+            self.refreshing = asyncio.create_task(self.quiet_refresh())
 
     async def quiet_refresh(self) -> None:
-        with contextlib.suppress(Exception):
-            await self.refresh_usage()
+        # Concurrent conversations share one CLI probe. If another turn ends during a probe,
+        # refresh once more so an older report cannot overwrite a newer one.
+        while self.refresh_pending:
+            self.refresh_pending = False
+            with contextlib.suppress(Exception):
+                await self.refresh_usage()
 
     async def usage_ready(self, timeout: float = 15) -> None:
-        task = getattr(self, "refreshing", None)
+        task = self.refreshing
         if task is not None and not task.done():
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(asyncio.shield(task), timeout)
@@ -518,7 +544,11 @@ class ClaudeCodeAgent:
             await asyncio.to_thread(sdk.delete_session, native_session, str(cwd))
 
     async def close(self) -> None:
-        return None
+        self.refresh_pending = False
+        if self.refreshing is not None:
+            if not self.refreshing.done():
+                self.refreshing.cancel()
+            await asyncio.gather(self.refreshing, return_exceptions=True)
 
 
 class _ResumeFailed(Exception):

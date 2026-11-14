@@ -17,11 +17,13 @@ function effective(window: UsageWindow): number | null {
 function resetText(resetsAt: number | null): string {
   if (!resetsAt) return ''
   const when = new Date(resetsAt * 1000)
+  if (!Number.isFinite(when.getTime())) return ''
+  if (when.getTime() <= Date.now()) return 'リセット予定時刻を過ぎています'
   const soon = when.getTime() - Date.now() < 24 * 3600 * 1000
   const text = soon
     ? when.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
     : when.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })
-  return soon ? `${text}にリセット` : `${text}にリセット`
+  return `${text}にリセット`
 }
 
 function tone(percent: number | null): string {
@@ -42,10 +44,10 @@ export function usageLabel(executor: Executor): string {
 export function UsageRow({ window }: { window: UsageWindow }) {
   const percent = effective(window)
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-10 shrink-0 text-right">{window.label}</span>
-      <span className="h-1.5 w-20 overflow-hidden rounded-full bg-raised">
-        <span className={`block h-full ${tone(percent)}`} style={{ width: `${Math.min(100, percent ?? 0)}%` }} />
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span className="min-w-10 shrink-0">{window.label}</span>
+      <span className="h-1.5 w-20 overflow-hidden rounded-full bg-raised" aria-hidden>
+        <span className={`block h-full ${tone(percent)}`} style={{ width: `${Math.max(0, Math.min(100, percent ?? 0))}%` }} />
       </span>
       <span className={percent !== null && percent >= WARN_PERCENT ? 'font-medium text-warn' : ''}>{amount(window)}</span>
       <span>{resetText(window.resetsAt)}</span>

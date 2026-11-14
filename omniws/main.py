@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from .runs import RunManager
 from .external_sessions import ExternalSessions
 
 WEB_DIST = ROOT / "web" / "dist"
+log = logging.getLogger(__name__)
 
 health = APIRouter()
 
@@ -67,14 +69,23 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         mark_interrupted(app.state.sessions)
         app_settings.load(app.state.sessions, settings, app.state.env_settings)
         app.state.auth.load(app.state.sessions)
-        yield
-        for run in list(app.state.runs.runs.values()):
-            if run.task and not run.done:
-                run.task.cancel()
-        for agent in app.state.agents.values():
-            if hasattr(agent, "close"):
-                await agent.close()
-        engine.dispose()
+        try:
+            yield
+        finally:
+            # Runs save partial replies and return queued inputs while cancelling. Keep the
+            # database and agents alive until that cleanup has finished.
+            tasks = [run.task for run in app.state.runs.runs.values() if run.task and not run.task.done()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                agents_to_close = [(name, agent) for name, agent in app.state.agents.items() if hasattr(agent, "close")]
+                results = await asyncio.gather(*(agent.close() for _, agent in agents_to_close), return_exceptions=True)
+                for (name, _), result in zip(agents_to_close, results):
+                    if isinstance(result, BaseException):
+                        log.error("closing agent %s failed", name, exc_info=result)
+            finally:
+                engine.dispose()
 
     app = FastAPI(title="OmniLLMWorkspace", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)

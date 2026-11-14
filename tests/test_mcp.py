@@ -1,11 +1,14 @@
+import asyncio
 import json
 import sys
 from pathlib import Path
 
 import httpx2 as httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from omniws.events import message_chunk, usage_update
+from omniws import mcp_tools
 from omniws.main import create_app
 from omniws.models import AppSetting
 from omniws.providers.base import ChatRequest, ModelInfo
@@ -210,3 +213,123 @@ def test_anthropic_tool_use_turn_goes_back_with_results():
     assert request.assistant_turn["content"][0] == {"type": "thinking", "thinking": "考え", "signature": "sig"}
     results = provider.tool_results([{"id": "toolu_1", "text": "2", "is_error": False}])
     assert results[0]["content"][0] == {"type": "tool_result", "tool_use_id": "toolu_1", "content": "2", "is_error": False}
+
+
+@pytest.mark.parametrize("changes", [
+    {"name": None}, {"command": 123}, {"transport": []}, {"args": "--version"}, {"args": [None]},
+    {"env": ["TOKEN"]}, {"env": {"TOKEN": 123}}, {"env": None}, {"headers": {"Authorization": "a\nb"}},
+    {"enabled": "false"}, {"always_allow": None}, {"always_allow": "add"}, {"always_allow": [123]},
+    {"transport": "http", "url": "https://[invalid"},
+    {"transport": "http", "url": "https://example.com:bad/mcp"},
+    {"transport": "http", "url": "https://user:secret@example.com/mcp"},
+    {"transport": "http", "url": "https://example.com/mcp#token"},
+])
+def test_invalid_settings_are_rejected_without_changing_the_server(tmp_path, changes):
+    app = app_for(tmp_path, ToolProvider(), omni_allow_mcp=True, omni_allow_mcp_stdio=True)
+    with TestClient(app) as client:
+        client.post("/api/auth/login", json={"password": PASSWORD})
+        before = client.post("/api/settings/mcp", json=stdio_server()).json()
+        server_id = before["servers"][0]["id"]
+        assert client.post("/api/settings/mcp", json=stdio_server(**changes)).status_code == 400
+        assert client.put(f"/api/settings/mcp/{server_id}", json=changes).status_code == 400
+        assert client.get("/api/settings/mcp").json() == before
+
+
+@pytest.mark.parametrize("stage", ["connecting", "connected"])
+def test_cancelling_toolset_reaps_all_connections(monkeypatch, stage):
+    closed = []
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def host(connection, secret):
+            try:
+                started.set()
+                if stage == "connected":
+                    connection.ready.set()
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)  # asynchronous transport cleanup must also finish
+                closed.append(connection.server["id"])
+
+        monkeypatch.setattr(mcp_tools, "host", host)
+        monkeypatch.setattr(mcp_tools, "CLOSE_SECONDS", 0.01)
+        toolset = mcp_tools.ToolSet([{"id": "one"}, {"id": "two"}], "secret")
+        entered = asyncio.Event()
+
+        async def run():
+            async with toolset:
+                entered.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(run())
+        await asyncio.wait_for(entered.wait() if stage == "connected" else started.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert all(connection.task.done() for connection in toolset.connections)
+        assert sorted(closed) == ["one", "two"]
+
+    asyncio.run(scenario())
+
+
+def test_connect_timeout_cannot_become_a_late_connection(monkeypatch):
+    async def host(connection, secret):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mcp_tools, "host", host)
+    monkeypatch.setattr(mcp_tools, "STARTUP_SECONDS", 0.01)
+
+    async def scenario():
+        async with mcp_tools.ToolSet([{"id": "slow", "name": "遅い"}], "secret") as toolset:
+            assert toolset.connections[0].task.done()
+            assert toolset.tools == []
+            assert toolset.failures() == [("遅い", "接続が時間内に完了しませんでした")]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("repeated_cursor", [False, True])
+def test_paginated_tools_and_names_that_used_to_collide(monkeypatch, repeated_cursor):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    names = ["a.b", "a/b", "a_b", "x" * 80 + "a", "x" * 80 + "b"]
+    cursors = []
+
+    @asynccontextmanager
+    async def transport(*args, **kwargs):
+        yield None, None
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def initialize(self):
+            pass
+        async def list_tools(self, *, params):
+            cursors.append(params.cursor)
+            page = names[:2] if params.cursor is None else names[2:]
+            return SimpleNamespace(tools=[SimpleNamespace(name=name, description="", annotations=None,
+                                                          input_schema=None) for name in page],
+                                   next_cursor="next" if params.cursor is None or repeated_cursor else None)
+
+    monkeypatch.setattr(mcp_tools, "stdio_client", transport)
+    monkeypatch.setattr(mcp_tools, "ClientSession", Session)
+
+    async def scenario():
+        async with mcp_tools.ToolSet([{**stdio_server(), "id": "server"}], "secret") as toolset:
+            if repeated_cursor:
+                assert toolset.failures() and toolset.tools == []
+                return
+            assert not toolset.failures()
+            assert [tool.name for tool in toolset.tools] == names
+            assert len({tool.exposed for tool in toolset.tools}) == len(names)
+            assert all(len(tool.exposed) <= 64 for tool in toolset.tools)
+            assert all(toolset.find(tool.exposed) is tool for tool in toolset.tools)
+
+    asyncio.run(scenario())
+    assert cursors == [None, "next"]

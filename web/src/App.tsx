@@ -27,7 +27,10 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  if (offline) return <Centered>サーバーに接続できません</Centered>
+  if (offline) return <Centered>
+    <p role="alert">サーバーに接続できません</p>
+    <button onClick={() => { setOffline(false); check() }} className="mt-4 rounded-lg bg-accent px-4 py-2 text-accent-fg">再接続</button>
+  </Centered>
   if (!me) return <Centered>読み込み中…</Centered>
   if (token && !me.signed_in) return <Enroll token={token} me={me} onDone={() => { setToken(null); check() }} />
   if (!me.signed_in) return <Login me={me} onSignedIn={check} />

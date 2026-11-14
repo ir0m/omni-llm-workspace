@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
 import {
-  api, ApiError, textOf, type AppConfig, type ApprovalMode, type Block, type ConversationDetail, type Draft, type Executor, type Mode,
-  type McpServer, type PermissionAsk, type ProjectList, type Target, type Usage,
+  api, textOf, type AppConfig, type ApprovalMode, type Draft, type Executor, type Mode,
+  type McpServer, type PermissionAsk, type ProjectList, type Target,
 } from '../api'
-import { applyUpdate, mergeUsage } from '../blocks'
-import { askToNotify, notify } from '../notify'
+import { useConversation } from '../useConversation'
+import { askToNotify } from '../notify'
 import ApprovalCard from './ApprovalCard'
 import ExecutorPicker, { firstTarget, startTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
@@ -23,11 +23,11 @@ const AGENT_LABEL: Record<string, string> = {
   opencode: 'OpenCode', codex: 'Codex', claude_code: 'Claude Code', claude_code_api: 'Claude Code', agy: 'Antigravity',
 }
 
-type Live = { runId: string; messageId: string; blocks: Block[]; usage: Usage | null; permissions: PermissionAsk[] }
-
 function savedTarget(mode: Mode): Target | null {
   try {
-    return JSON.parse(localStorage.getItem(`${LAST_TARGET}.${mode}`) ?? 'null')
+    const saved = JSON.parse(localStorage.getItem(`${LAST_TARGET}.${mode}`) ?? 'null')
+    return saved && typeof saved.provider === 'string' && typeof saved.model === 'string'
+      ? { provider: saved.provider, model: saved.model, effort: typeof saved.effort === 'string' ? saved.effort : null } : null
   } catch {
     return null
   }
@@ -35,21 +35,27 @@ function savedTarget(mode: Mode): Target | null {
 
 // What was typed survives switching conversations, leaving the page and reloads. A new conversation keeps one draft.
 const INPUT = 'omni.input'
+// Also retain drafts within this page when browser storage is disabled or full.
+const inputs = new Map<string, string>()
 
 function readInput(id: string | null): string {
+  const key = `${INPUT}.${id ?? 'new'}`
+  if (inputs.has(key)) return inputs.get(key)!
   try {
-    return localStorage.getItem(`${INPUT}.${id ?? 'new'}`) ?? ''
+    return localStorage.getItem(key) ?? ''
   } catch {
     return ''
   }
 }
 
 function writeInput(id: string | null, text: string) {
+  const key = `${INPUT}.${id ?? 'new'}`
+  inputs.set(key, text)
   try {
-    if (text) localStorage.setItem(`${INPUT}.${id ?? 'new'}`, text)
-    else localStorage.removeItem(`${INPUT}.${id ?? 'new'}`)
+    if (text) localStorage.setItem(key, text)
+    else localStorage.removeItem(key)
   } catch {
-    // storage full or disabled: the text simply isn't kept
+    // The in-memory draft remains available until the page is reloaded.
   }
 }
 
@@ -90,26 +96,33 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
 }
 
 export default function ChatView(props: Props) {
-  const { conversationId, executors, onError, onChanged, onSelect, config } = props
-  const [detail, setDetail] = useState<ConversationDetail | null>(null)
-  const [live, setLive] = useState<Live | null>(null)
+  const { conversationId, executors, onError, onChanged, config } = props
+  const { detail, setDetail, live, reconnecting, revision: panelRevision, load, follow, isActive } = useConversation(conversationId, props)
   const [target, setTarget] = useState<Target | null>(null)
   const [input, setInput] = useState(() => readInput(conversationId))
   useEffect(() => writeInput(conversationId, input), [conversationId, input])
   const [sending, setSending] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
-  const [panelRevision, setPanelRevision] = useState(0)
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   useEffect(() => {
-    if (!config?.allow_mcp || !config.capabilities?.includes('mcp')) return
-    api.mcp().then((data) => setMcpServers(data.servers.filter((server) => server.enabled && server.usable))).catch(() => setMcpServers([]))
+    let active = true
+    if (!config?.allow_mcp || !config.capabilities?.includes('mcp')) {
+      setMcpServers([])
+      return
+    }
+    api.mcp().then((data) => {
+      if (active) setMcpServers(data.servers.filter((server) => server.enabled && server.usable))
+    }).catch(() => { if (active) setMcpServers([]) })
+    return () => { active = false }
   }, [config])
   // Below lg the panel covers the conversation: the back button closes it
   useBackClose(panelOpen && !window.matchMedia('(min-width: 1024px)').matches, () => setPanelOpen(false))
   const [followup, setFollowup] = useState<string | null>(null)
   // "Continue with another executor" after a usage limit: the message to send again and where to
   const [retry, setRetry] = useState<{ text: string; target: Target | null } | null>(null)
-  const source = useRef<EventSource | null>(null)
+  const sendLock = useRef(false)
+  const inputValue = useRef(input)
+  inputValue.current = input
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const inputRequest = useRef<{ runId: string; id: string; text: string } | null>(null)
@@ -120,87 +133,6 @@ export default function ChatView(props: Props) {
   const project = detail ? detail.project : props.draft.project
   const temporary = detail ? detail.temporary : props.draft.temporary
   const approval: ApprovalMode = (detail ? detail.approval_mode : props.draft.approval_mode) ?? config?.approval_default ?? 'auto_edit'
-
-  const load = useCallback(
-    (id: string) =>
-      api.conversation(id).then((data) => {
-        setDetail(data)
-        return data
-      }),
-    [],
-  )
-
-  const follow = useCallback(
-    (runId: string, messageId: string) => {
-      source.current?.close()
-      setLive({ runId, messageId, blocks: [], usage: null, permissions: [] })
-      const events = new EventSource(`/api/runs/${runId}/events`)
-      source.current = events
-      const change = (update: (current: Live) => Live) =>
-        setLive((current) => (current && current.runId === runId ? update(current) : current))
-      events.addEventListener('update', (event) => {
-        const update = JSON.parse((event as MessageEvent).data)
-        change((current) => update.sessionUpdate === 'usage_update'
-          ? { ...current, usage: mergeUsage(current.usage, update) }
-          : { ...current, blocks: applyUpdate(current.blocks, update) })
-      })
-      events.addEventListener('permission', (event) => {
-        const ask: PermissionAsk = JSON.parse((event as MessageEvent).data)
-        change((current) => ({ ...current, permissions: [...current.permissions.filter((item) => item.requestId !== ask.requestId), ask] }))
-        notify('承認が必要です', ask.command ?? (ask.paths.join(', ') || ask.title))
-      })
-      events.addEventListener('permission_resolved', (event) => {
-        const { requestId } = JSON.parse((event as MessageEvent).data)
-        change((current) => ({ ...current, permissions: current.permissions.filter((item) => item.requestId !== requestId) }))
-      })
-      events.addEventListener('input_changed', () => {
-        if (conversationId) load(conversationId).catch(onError)
-      })
-      const finish = () => {
-        events.close()
-        if (source.current === events) source.current = null
-        if (conversationId) load(conversationId).then((data) => {
-          const streaming = data.messages.findLast((message) => message.status === 'streaming')
-          if (data.active_run && streaming) follow(data.active_run, streaming.id)
-          else setLive(null)
-        }).catch(onError)
-        else setLive(null)
-        onChanged()
-        props.onRunFinished()  // usage windows move after every turn
-        setPanelRevision((value) => value + 1)
-      }
-      events.addEventListener('status', (event) => {
-        const status = JSON.parse((event as MessageEvent).data).status
-        if (status !== 'running') {
-          notify(status === 'complete' ? '応答が完了しました' : '応答が止まりました', document.title)
-          finish()
-        }
-      })
-      events.onerror = () => {
-        if (events.readyState === EventSource.CLOSED) finish()  // the run is gone; show what was saved
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationId, load, onChanged, onError],
-  )
-
-  useEffect(() => {
-    if (!conversationId) {
-      setDetail(null)
-      return
-    }
-    load(conversationId)
-      .then((data) => {
-        const streaming = data.messages.findLast((message) => message.status === 'streaming')
-        if (data.active_run && streaming) follow(data.active_run, streaming.id)
-      })
-      .catch((caught) => {
-        // A link to a deleted conversation would fail again on every reload: leave it
-        if (caught instanceof ApiError && caught.status === 404) onSelect(null)
-        onError(caught)
-      })
-    return () => source.current?.close()
-  }, [conversationId, load, follow, onError, onSelect])
 
   // Persist the recovered text before acknowledging it, including when the screen was closed at completion.
   useEffect(() => {
@@ -234,7 +166,7 @@ export default function ChatView(props: Props) {
     if (conversationId && !detail) return
     let initial = detail?.target ?? savedTarget(mode) ?? firstTarget(executors, mode)
     // A new conversation keeps the last executor but starts with that executor's default model, if one is set
-    const chosen = !detail?.target && initial ? executors.find((item) => item.id === initial?.provider) : undefined
+    const chosen = !conversationId && initial ? executors.find((item) => item.id === initial?.provider) : undefined
     if (chosen?.default) initial = startTarget(chosen)
     if (initial && !initial.model) {
       const model = executors.find((item) => item.id === initial?.provider)?.models[0]?.id
@@ -265,7 +197,7 @@ export default function ChatView(props: Props) {
 
   function chooseTarget(next: Target) {
     setTarget(next)
-    localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next))
+    try { localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next)) } catch { /* storage disabled or full */ }
   }
 
   async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; clear_allow_rules?: boolean; mcp_off?: string[] }) {
@@ -296,13 +228,16 @@ export default function ChatView(props: Props) {
   const blocked = detail?.sync_error ? detail.sync_error
     : conversationId && !detail ? '会話を読み込んでいます'
     : mode === 'code' && !project ? 'プロジェクトを選んでください'
+    : target && !executor ? '選択した実行元が見つかりません。実行元を選び直してください'
     : executor && !usable(executor, mode) ? (mode === 'code' ? 'この実行元は Code で使えません' : 'この実行元は Chat で使えません')
     : null
 
   const sendText = useCallback(async (text: string) => {
-    if (!text || !target || sending || blocked || (live && !canInput)) return
+    if (!text || !target || sendLock.current || sending || blocked || (live && !canInput)) return
+    sendLock.current = true
     setSending(true)
     if (mode === 'code') askToNotify()
+    let id = conversationId
     try {
       if (live) {
         const previous = inputRequest.current
@@ -311,17 +246,23 @@ export default function ChatView(props: Props) {
         inputRequest.current = attempt
         const result = await api.input(live.runId, attempt.id, text)
         inputRequest.current = null
+        if (!isActive()) return
         setInput((current) => current.trim() === text ? '' : current)
         if (result.status === 'returned') onError(new Error('追加指示の送信結果を確認できません。入力欄に戻します。履歴を確認してから再送してください。'))
         if (conversationId) await load(conversationId)
         return
       }
-      let id = conversationId
-      if (!id) id = (await api.create(props.draft)).id
+      if (!id) {
+        id = (await api.create(props.draft)).id
+        onChanged()
+      }
       const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort })
+      onChanged()
+      if (!isActive()) return
       setInput((current) => (current.trim() === text ? '' : current))
       stick.current = true
       if (id !== conversationId) {
+        writeInput(id, inputValue.current.trim() === text ? '' : inputValue.current)
         writeInput(null, '')  // this view unmounts before its own effect would clear the draft
         props.onSelect(id)  // this view is replaced by one for the new conversation, which follows the run
       } else {
@@ -330,13 +271,22 @@ export default function ChatView(props: Props) {
         )
         follow(started.run_id, started.assistant_message.id)
       }
-      onChanged()
     } catch (error) {
-      onError(error)
+      if (isActive()) {
+        if (id && !conversationId) {
+          // The conversation already exists even if sending failed. Open it with the draft
+          // intact, so retrying cannot create duplicates and later settings changes apply to it.
+          writeInput(id, inputValue.current)
+          writeInput(null, '')
+          props.onSelect(id)
+        }
+        onError(error)
+      }
     } finally {
-      setSending(false)
+      sendLock.current = false
+      if (isActive()) setSending(false)
     }
-  }, [target, sending, live, blocked, mode, conversationId, props, follow, onChanged, onError, canInput, load])
+  }, [target, sending, live, blocked, mode, conversationId, props, follow, onChanged, onError, canInput, load, isActive])
 
   // After "deny with a reason" stopped the turn, the reason becomes the next message
   useEffect(() => {
@@ -528,6 +478,7 @@ export default function ChatView(props: Props) {
           </div>
         )}
         {blocked && <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">{blocked}</p>}
+        {reconnecting && <p role="status" className="mx-auto mb-2 max-w-3xl text-center text-xs text-warn">接続が切れました。再接続しています…</p>}
         {!!detail?.pending_inputs?.some((item) => item.status === 'queued') && (
           <div className="mx-auto mb-2 max-h-28 max-w-3xl overflow-y-auto rounded-xl border border-border px-3 py-2 text-sm">
             {detail.pending_inputs.filter((item) => item.status === 'queued').map((item) => (
@@ -550,8 +501,9 @@ export default function ChatView(props: Props) {
               const on = !mcpOff.includes(server.id)
               return (
                 <button key={server.id} aria-pressed={on} title={on ? `${server.name} を使う（押すと外す）` : `${server.name} を使わない（押すと使う）`}
+                  disabled={!!live || sending}
                   onClick={() => change({ mcp_off: on ? [...mcpOff, server.id] : mcpOff.filter((id) => id !== server.id) })}
-                  className={`rounded-full border px-2 py-0.5 ${on ? 'border-accent text-accent' : 'border-border text-muted line-through'}`}>
+                  className={`rounded-full border px-2 py-0.5 disabled:opacity-50 ${on ? 'border-accent text-accent' : 'border-border text-muted line-through'}`}>
                   {server.name}
                 </button>
               )
@@ -560,6 +512,7 @@ export default function ChatView(props: Props) {
         )}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
           <textarea
+            aria-label="メッセージ"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {

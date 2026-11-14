@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import type { PermissionAsk } from '../api'
 import { DiffView } from './ToolCard'
@@ -26,15 +26,29 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
   ask: PermissionAsk
   agent: string
   project: string | null
-  onAnswer: (outcome: 'allow' | 'allow_always' | 'deny', reason?: string) => void
+  onAnswer: (outcome: 'allow' | 'allow_always' | 'deny', reason?: string) => Promise<void>
 }) {
   const [denying, setDenying] = useState(false)
   const [reason, setReason] = useState('')
   const [showDiff, setShowDiff] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const answering = useRef(false)
   const always = alwaysLabel(ask)
 
+  async function answer(outcome: 'allow' | 'allow_always' | 'deny', reason?: string) {
+    if (answering.current) return
+    answering.current = true
+    setBusy(true)
+    try {
+      await onAnswer(outcome, reason)
+    } finally {
+      answering.current = false
+      setBusy(false)
+    }
+  }
+
   return (
-    <div className="mx-auto mb-2 flex max-h-[55dvh] max-w-3xl flex-col rounded-2xl border border-warn/60 bg-bg p-3 shadow-lg">
+    <div aria-busy={busy} className="mx-auto mb-2 flex max-h-[55dvh] max-w-3xl flex-col rounded-2xl border border-warn/60 bg-bg p-3 shadow-lg">
       <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
         <ShieldAlert className="size-4 text-warn" aria-hidden />
         承認が必要です · {agent} が{ACTION[ask.kind] ?? ACTION.other}
@@ -48,7 +62,7 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
           </>
         )}
         {ask.paths.length > 0 && !ask.command && (
-          <p className="mt-2 truncate font-mono text-sm">{ask.paths.join(', ')}</p>
+          <p className="mt-2 whitespace-pre-wrap break-all font-mono text-sm">{ask.paths.join('\n')}</p>
         )}
         {ask.diff && (
           <div className="mt-2">
@@ -62,9 +76,10 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
         </p>
       </div>
       {denying ? (
-        <div className="mt-3 shrink-0">
+        <fieldset disabled={busy} className="mt-3 shrink-0 disabled:opacity-60">
           <textarea
             autoFocus
+            aria-label="拒否する理由"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={2}
@@ -73,21 +88,21 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
           />
           <div className="mt-2 flex flex-wrap justify-end gap-2 text-sm">
             <button onClick={() => setDenying(false)} className="rounded-lg px-3 py-1.5 text-muted">戻る</button>
-            <button onClick={() => onAnswer('deny', reason.trim() || undefined)} className="rounded-lg bg-danger px-3 py-1.5 font-medium text-white">
+            <button onClick={() => answer('deny', reason.trim() || undefined)} className="rounded-lg bg-danger px-3 py-1.5 font-medium text-white">
               {reason.trim() ? '拒否して理由を送る' : '拒否'}
             </button>
           </div>
-        </div>
+        </fieldset>
       ) : (
-        <div className="mt-3 flex shrink-0 flex-wrap gap-2 text-sm">
-          <button onClick={() => onAnswer('allow')} className="rounded-lg bg-accent px-4 py-1.5 font-medium text-accent-fg">許可</button>
+        <fieldset disabled={busy} className="mt-3 flex shrink-0 flex-wrap gap-2 text-sm disabled:opacity-60">
+          <button onClick={() => answer('allow')} className="rounded-lg bg-accent px-4 py-1.5 font-medium text-accent-fg">{busy ? '送信中…' : '許可'}</button>
           {always ? (
-            <button onClick={() => onAnswer('allow_always')} className="rounded-lg border border-border px-3 py-1.5">{always}</button>
+            <button onClick={() => answer('allow_always')} className="rounded-lg border border-border px-3 py-1.5">{always}</button>
           ) : (
             <span className="self-center text-xs text-muted">つないだコマンドは毎回確認します</span>
           )}
           <button onClick={() => setDenying(true)} className="rounded-lg border border-border px-3 py-1.5 text-danger">拒否…</button>
-        </div>
+        </fieldset>
       )}
     </div>
   )

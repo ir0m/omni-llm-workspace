@@ -235,3 +235,88 @@ def test_usage_report_from_the_cli_is_parsed_and_stored(tmp_path):
     api = ClaudeCodeAgent(make_settings(tmp_path / "api"), "api", cli_path=str(cli))
     asyncio.run(api.refresh_usage())
     assert api.usage() is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_usage_probe_is_killed_and_reaped_on_timeout_or_cancel(tmp_path, monkeypatch, cancel):
+    from omniws.agents import claude as module
+
+    async def scenario():
+        started = asyncio.Event()
+
+        class Process:
+            returncode = None
+            killed = False
+            waited = False
+            async def communicate(self):
+                started.set()
+                await asyncio.Event().wait()
+            def kill(self):
+                self.killed = True
+            async def wait(self):
+                self.waited = True
+                self.returncode = -9
+
+        process = Process()
+        async def spawn(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(module, "USAGE_SECONDS", 10 if cancel else 0.01)
+        claude = agent(tmp_path, omni_allow_claude_subscription=True)
+        claude.cli_path = "fake-cli"
+        task = asyncio.create_task(claude.refresh_usage())
+        await started.wait()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        assert process.killed and process.waited
+        assert not claude.usage_file.exists()
+
+    asyncio.run(scenario())
+
+
+def test_usage_refreshes_are_serialized_and_closed(tmp_path, monkeypatch):
+    async def scenario():
+        claude = agent(tmp_path, omni_allow_claude_subscription=True)
+        started = asyncio.Queue()
+        release = asyncio.Event()
+        calls = []
+        active = 0
+        async def refresh():
+            nonlocal active
+            active += 1
+            assert active == 1
+            calls.append(len(calls) + 1)
+            started.put_nowait(len(calls))
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(claude, "refresh_usage", refresh)
+        claude.schedule_usage_refresh()
+        assert await started.get() == 1
+        for _ in range(5):
+            claude.schedule_usage_refresh()
+        release.set()
+        await claude.usage_ready(timeout=1)
+        assert calls == [1, 2]
+        release.clear()
+        claude.schedule_usage_refresh()
+        assert await started.get() == 2
+        assert await started.get() == 3
+        await claude.close()
+        assert active == 0 and claude.refreshing.done()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("text", ["4:99pm (Asia/Tokyo)", "0am (UTC)", "13pm (UTC)", "Feb 30, 4pm (UTC)",
+                                  "4pm (Invalid/Zone)"])
+def test_malformed_reset_times_do_not_break_usage(text):
+    from omniws.agents.claude import parse_reset
+    assert parse_reset(text, 1_800_000_000) is None
