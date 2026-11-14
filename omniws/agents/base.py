@@ -63,6 +63,9 @@ class Turn:
     require_resume: bool = False  # imported sessions must never silently become a different session
     on_turn_id: Callable[[str], None] | None = None
     on_input_ready: Callable[[Steer | None], None] | None = None
+    # Chat only: images (and PDFs for Claude Code) for the agent's own input, {"kind", "media_type", "name", "path"}.
+    # Text files are already in `text`; in Code every attachment is a file in the project, listed in `text`.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Agent(Protocol):

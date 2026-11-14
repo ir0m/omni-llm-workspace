@@ -412,7 +412,8 @@ class CodexAgent:
             if inject:
                 await connection.call("thread/inject_items", {"threadId": thread_id,
                                                               "items": [response_item(item) for item in inject]}, timeout=60)
-            params: dict[str, Any] = {"threadId": thread_id, "input": [{"type": "text", "text": turn.text}],
+            images = [{"type": "localImage", "path": item["path"]} for item in turn.attachments if item["kind"] == "image"]
+            params: dict[str, Any] = {"threadId": thread_id, "input": [{"type": "text", "text": turn.text}, *images],
                                       "model": turn.model}
             if turn.effort:
                 params["effort"] = turn.effort

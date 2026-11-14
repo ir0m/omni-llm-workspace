@@ -13,6 +13,7 @@ settings files (allow rules, hooks) are not loaded, so every permission goes thr
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import difflib
 import json
@@ -425,7 +426,7 @@ class ClaudeCodeAgent:
         started = False
         try:
             async with sdk.ClaudeSDKClient(options=self.turn_options(turn, resume)) as client:
-                await client.query(prompt)
+                await client.query(user_message(prompt, turn.attachments) if turn.attachments else prompt)
                 result = None
                 failure = None
                 async for message in client.receive_response():
@@ -566,6 +567,24 @@ class ClaudeCodeAgent:
             if not self.refreshing.done():
                 self.refreshing.cancel()
             await asyncio.gather(self.refreshing, return_exceptions=True)
+
+
+def attachment_block(item: dict[str, Any]) -> dict[str, Any]:
+    data = base64.b64encode(Path(item["path"]).read_bytes()).decode()
+    if item["kind"] == "image":
+        return {"type": "image", "source": {"type": "base64", "media_type": item["media_type"], "data": data}}
+    return {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+            "title": item["name"]}
+
+
+async def user_message(prompt: str, attachments: list[dict[str, Any]]):
+    """The prompt with images and PDFs, as the one user message of the SDK's streaming input."""
+    try:
+        blocks = [attachment_block(item) for item in attachments]
+    except OSError as exc:
+        raise ProviderError("bad_request", "添付ファイルを読み込めませんでした。もう一度添付してください") from exc
+    yield {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}, *blocks]},
+           "parent_tool_use_id": None}
 
 
 class _ResumeFailed(Exception):

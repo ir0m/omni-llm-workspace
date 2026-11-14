@@ -274,6 +274,8 @@ def delete_all(body: DeleteAll, request: Request, session: Session = Depends(db)
         session.delete(conversation)
         deleted += 1
     session.commit()
+    from .conversations import collect_attachments
+    collect_attachments(request.app.state)
     return {"deleted": deleted}
 
 

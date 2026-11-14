@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, FolderOpen, Menu, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
+import { ArrowUp, File as FileIcon, FolderOpen, Menu, Paperclip, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
 import {
-  api, textOf, type AppConfig, type ApprovalMode, type Draft, type Executor, type Mode,
+  api, attachmentsOf, attachmentUrl, textOf, type AppConfig, type AttachmentInfo, type ApprovalMode, type Draft, type Executor, type Mode,
   type McpServer, type PermissionAsk, type ProjectList, type Target,
 } from '../api'
 import { useConversation } from '../useConversation'
@@ -15,6 +15,7 @@ import ProjectPicker from './ProjectPicker'
 import UsageMeter from './UsageMeter'
 import ProjectPanel from './ProjectPanel'
 import { useBackClose } from '../backClose'
+import { attach, sizeLabel } from '../attach'
 
 const LAST_TARGET = 'omni.lastTarget'
 const AGENT_IDS = new Set(['codex', 'claude_code', 'claude_code_api', 'agy', 'opencode_free'])
@@ -60,6 +61,13 @@ function writeInput(id: string | null, text: string) {
   }
 }
 
+// Uploaded files waiting to be sent stay with their conversation while this page is open
+type Pending = { key: string; name: string; size: number; preview: string | null; info: AttachmentInfo | null; error: string | null }
+const pendingFiles = new Map<string, AttachmentInfo[]>()
+const pendingKey = (id: string | null) => id ?? 'new'
+const fromInfo = (info: AttachmentInfo): Pending => ({ key: info.id, name: info.name, size: info.size, info, error: null,
+  preview: info.kind === 'image' ? attachmentUrl(info.id) : null })
+
 const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
 
 type Props = {
@@ -103,6 +111,19 @@ export default function ChatView(props: Props) {
   const [input, setInput] = useState(() => readInput(conversationId))
   useEffect(() => writeInput(conversationId, input), [conversationId, input])
   const [sending, setSending] = useState(false)
+  const [pending, setPending] = useState<Pending[]>(() => (pendingFiles.get(pendingKey(conversationId)) ?? []).map(fromInfo))
+  const [dragging, setDragging] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const ready = pending.flatMap((item) => item.info ? [item.info] : [])
+    if (ready.length) pendingFiles.set(pendingKey(conversationId), ready)
+    else pendingFiles.delete(pendingKey(conversationId))
+  }, [conversationId, pending])
+  // Local previews of photos being uploaded are released when they leave the list or the view
+  const previews = useRef(new Set<string>())
+  useEffect(() => () => previews.current.forEach((url) => URL.revokeObjectURL(url)), [])
+  const ready = pending.flatMap((item) => item.info ? [item.info] : [])
+  const uploading = pending.some((item) => !item.info && !item.error)
   const [panelOpen, setPanelOpen] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   useEffect(() => {
@@ -118,9 +139,9 @@ export default function ChatView(props: Props) {
   }, [config])
   // Below lg the panel covers the conversation: the back button closes it
   useBackClose(panelOpen && !window.matchMedia('(min-width: 1024px)').matches, () => setPanelOpen(false))
-  const [followup, setFollowup] = useState<string | null>(null)
+  const [followup, setFollowup] = useState<{ text: string; files: AttachmentInfo[] } | null>(null)
   // "Continue with another executor" after a usage limit: the message to send again and where to
-  const [retry, setRetry] = useState<{ text: string; target: Target | null } | null>(null)
+  const [retry, setRetry] = useState<{ text: string; files: AttachmentInfo[]; target: Target | null } | null>(null)
   const sendLock = useRef(false)
   const inputValue = useRef(input)
   inputValue.current = input
@@ -233,8 +254,38 @@ export default function ChatView(props: Props) {
     : executor && !usable(executor, mode) ? (mode === 'code' ? 'この実行元は Code で使えません' : 'この実行元は Chat で使えません')
     : null
 
-  const sendText = useCallback(async (text: string) => {
-    if (!text || !target || sendLock.current || sending || blocked || (live && !canInput)) return
+  function addFiles(list: FileList | File[]) {
+    const chosen = Array.from(list).slice(0, Math.max(0, 10 - pending.length))
+    if (list.length > chosen.length) onError(new Error('添付できるファイルは1回に10個までです'))
+    for (const file of chosen) {
+      const key = crypto.randomUUID()
+      const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
+      if (preview) previews.current.add(preview)
+      setPending((current) => [...current, { key, name: file.name || '貼り付けた画像', size: file.size, preview, info: null, error: null }])
+      attach(file).then((info) => {
+        setPending((current) => current.map((item) => item.key === key ? { ...item, info, name: info.name, size: info.size } : item))
+      }).catch((reason) => {
+        setPending((current) => current.map((item) => item.key === key
+          ? { ...item, error: reason instanceof Error ? reason.message : 'アップロードできませんでした' } : item))
+      })
+    }
+  }
+
+  function removeFile(key: string) {
+    setPending((current) => {
+      const item = current.find((entry) => entry.key === key)
+      if (item?.preview && previews.current.has(item.preview)) {
+        URL.revokeObjectURL(item.preview)
+        previews.current.delete(item.preview)
+      }
+      return current.filter((entry) => entry.key !== key)
+    })
+  }
+
+  const sendText = useCallback(async (text: string, files: AttachmentInfo[] = []) => {
+    // Instructions added while an agent works are text only
+    if (live) files = []
+    if ((!text && !files.length) || !target || sendLock.current || sending || blocked || (live && !canInput)) return
     sendLock.current = true
     setSending(true)
     if (mode === 'code') askToNotify()
@@ -257,7 +308,10 @@ export default function ChatView(props: Props) {
         id = (await api.create(props.draft)).id
         onChanged()
       }
-      const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort })
+      const started = await api.send(id, { text, provider: target.provider, model: target.model, effort: target.effort,
+        attachments: files.map((file) => file.id) })
+      const sent = new Set(files.map((file) => file.id))
+      setPending((current) => current.filter((item) => !item.info || !sent.has(item.info.id)))
       onChanged()
       if (!isActive()) return
       setInput((current) => (current.trim() === text ? '' : current))
@@ -265,6 +319,7 @@ export default function ChatView(props: Props) {
       if (id !== conversationId) {
         writeInput(id, inputValue.current.trim() === text ? '' : inputValue.current)
         writeInput(null, '')  // this view unmounts before its own effect would clear the draft
+        pendingFiles.delete(pendingKey(null))
         props.onSelect(id)  // this view is replaced by one for the new conversation, which follows the run
       } else {
         setDetail((current) =>
@@ -279,6 +334,8 @@ export default function ChatView(props: Props) {
           // intact, so retrying cannot create duplicates and later settings changes apply to it.
           writeInput(id, inputValue.current)
           writeInput(null, '')
+          if (files.length) pendingFiles.set(id, files)  // the view for the new conversation picks them up
+          pendingFiles.delete(pendingKey(null))
           props.onSelect(id)
         }
         onError(error)
@@ -293,7 +350,7 @@ export default function ChatView(props: Props) {
   useEffect(() => {
     if (!live && followup && !sending) {
       setFollowup(null)
-      sendText(followup)
+      sendText(followup.text, followup.files)
     }
   }, [live, followup, sending, sendText])
 
@@ -302,7 +359,7 @@ export default function ChatView(props: Props) {
     try {
       await api.answer(live.runId, ask.requestId, outcome, reason)
       if (outcome === 'deny' && reason) {
-        setFollowup(reason)
+        setFollowup({ text: reason, files: [] })
         await api.cancel(live.runId)
       }
       if (outcome === 'allow_always' && conversationId) load(conversationId).catch(onError)
@@ -315,7 +372,7 @@ export default function ChatView(props: Props) {
     const question = messages.slice(0, replyIndex).findLast((message) => message.role === 'user')
     if (!question) return
     const others = executors.filter((item) => item.id !== target?.provider && usable(item, mode))
-    setRetry({ text: textOf(question), target: others.length ? { provider: others[0].id, model: others[0].models[0].id, effort: null } : null })
+    setRetry({ text: textOf(question), files: attachmentsOf(question), target: others.length ? { provider: others[0].id, model: others[0].models[0].id, effort: null } : null })
   }
 
   async function fork(messageId: string) {
@@ -468,7 +525,7 @@ export default function ChatView(props: Props) {
               onClick={() => {
                 if (!retry.target) return
                 chooseTarget(retry.target)
-                setFollowup(retry.text)
+                setFollowup({ text: retry.text, files: retry.files })
                 setRetry(null)
               }}
               className="rounded-lg bg-accent px-3 py-1 font-medium text-accent-fg disabled:opacity-40"
@@ -512,16 +569,58 @@ export default function ChatView(props: Props) {
             })}
           </div>
         )}
-        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
+        <div className={`mx-auto max-w-3xl rounded-2xl border bg-surface p-2 focus-within:border-accent ${dragging ? 'border-accent' : 'border-border'}`}
+          onDragOver={(event) => {
+            if (live || !event.dataTransfer.types.includes('Files')) return
+            event.preventDefault()
+            setDragging(true)
+          }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
+          onDrop={(event) => {
+            setDragging(false)
+            if (live || !event.dataTransfer.files.length) return
+            event.preventDefault()
+            addFiles(event.dataTransfer.files)
+          }}>
+          {pending.length > 0 && <ul className="mb-2 flex flex-wrap gap-2" aria-label="添付するファイル">
+            {pending.map((item) => <li key={item.key}
+              className={`flex max-w-full items-center gap-2 rounded-xl border bg-bg py-1 pl-1 pr-1.5 text-xs ${item.error ? 'border-danger' : 'border-border'}`}>
+              {item.preview ? <img src={item.preview} alt="" className="size-9 shrink-0 rounded-lg object-cover" />
+                : <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-raised"><FileIcon className="size-4 text-muted" aria-hidden /></span>}
+              <span className="flex min-w-0 flex-col">
+                <span className="max-w-[12rem] truncate" title={item.name}>{item.name}</span>
+                <span className={item.error ? 'text-danger' : 'text-muted'} role={item.error ? 'alert' : undefined}>
+                  {item.error ?? (item.info ? sizeLabel(item.size) : 'アップロード中…')}
+                </span>
+              </span>
+              <button onClick={() => removeFile(item.key)} aria-label={`${item.name} を外す`} title="外す"
+                className="shrink-0 rounded p-1 text-muted hover:text-fg"><X className="size-3.5" aria-hidden /></button>
+            </li>)}
+          </ul>}
+          <div className="flex items-end gap-2">
+          <input ref={picker} type="file" multiple hidden onChange={(event) => {
+            if (event.target.files?.length) addFiles(event.target.files)
+            event.target.value = ''  // choosing the same file again still adds it
+          }} />
+          <button onClick={() => picker.current?.click()} disabled={!!live || sending || pending.length >= 10}
+            className="rounded-xl p-2 text-muted hover:text-fg disabled:opacity-40" aria-label="ファイルを添付"
+            title={live ? '応答中は添付できません' : 'ファイルを添付（ドラッグ＆ドロップ・画像の貼り付けもできます）'}>
+            <Paperclip className="size-5" aria-hidden />
+          </button>
           <textarea
             aria-label="メッセージ"
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onPaste={(event) => {
+              if (live || !event.clipboardData.files.length) return
+              event.preventDefault()  // a pasted screenshot becomes an attachment, not text
+              addFiles(event.clipboardData.files)
+            }}
             onKeyDown={(event) => {
               // Enter sends on a keyboard; on touch screens Enter is a new line. Never while the IME is composing.
               if (event.key === 'Enter' && !event.shiftKey && !touch && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault()
-                sendText(input.trim())
+                if (!uploading) sendText(input.trim(), ready)
               }
             }}
             rows={Math.min(8, Math.max(1, input.split('\n').length))}
@@ -535,15 +634,16 @@ export default function ChatView(props: Props) {
           )}
           {(!live || canInput) && (
             <button
-              onClick={() => sendText(input.trim())}
-              disabled={!input.trim() || !target || sending || blocked !== null}
+              onClick={() => sendText(input.trim(), ready)}
+              disabled={(!input.trim() && (!!live || !ready.length)) || uploading || !target || sending || blocked !== null}
               className="rounded-xl bg-accent p-2 text-accent-fg disabled:opacity-40"
               aria-label="送信"
-              title="送信"
+              title={uploading ? 'アップロードの完了を待っています' : '送信'}
             >
               <ArrowUp className="size-5" aria-hidden />
             </button>
           )}
+          </div>
         </div>
         <UsageMeter executor={executor} />
       </div>

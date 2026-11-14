@@ -20,6 +20,7 @@ from ..agents.base import Agent, Turn
 from ..agents.handover import build_prompt, turn_items
 from ..agents.opencode import FREE, PROVIDER_IDS, OpenCodeAgent
 from ..db import now_ms
+from .. import attachments as files
 from ..history import chat_history
 from ..models import AgentSession, Conversation, ExternalSession, Message
 from ..external_sessions import origin, remember_deleted, same_origin
@@ -114,7 +115,9 @@ class Fork(BaseModel):
 
 
 class Send(BaseModel):
-    text: str = Field(min_length=1, max_length=200_000)
+    text: str = Field(default="", max_length=200_000)
+    # Uploaded with POST /api/attachments
+    attachments: list[Annotated[str, Field(max_length=32)]] = Field(default_factory=list, max_length=files.MAX_PER_MESSAGE)
     provider: str
     model: str = Field(min_length=1, max_length=200)
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
@@ -232,7 +235,16 @@ def _delete_conversation(conversation_id: str, request: Request, session: Sessio
     remember_deleted(session, conversation, request.app.state.settings.omni_projects_dir)
     session.delete(conversation)
     session.commit()
+    collect_attachments(request.app.state)
     return {"ok": True}
+
+
+def collect_attachments(state) -> None:
+    from .attachments import collect
+    try:
+        collect(state)
+    except Exception:
+        log.exception("cleaning up attachments failed")
 
 
 @router.post("/{conversation_id}/fork", status_code=201)
@@ -276,6 +288,29 @@ async def _fork_conversation(conversation_id: str, body: Fork, request: Request,
             raise
         raise HTTPException(502, "CLI側の分岐に失敗しました。元の会話は変更していません") from exc
     return conversation_dict(copy, request.app.state.runs)
+
+
+def check_attachments(items: list[dict[str, Any]], mode: str, provider: ChatProvider | None, model: Any,
+                      agent: Agent | None) -> None:
+    """Refuse before anything is stored what the chosen model or agent can't take."""
+    def refuse(item: dict[str, Any], reason: str) -> None:
+        raise HTTPException(status_code=400, detail=f"{item['name']}: {reason}")
+    for item in items:
+        kind = item["kind"]
+        if agent is not None:
+            if mode == "code":
+                continue  # copied into the project: the agent opens it with its own tools
+            if kind == "file":
+                refuse(item, "この形式はChatでは送れません。Codeならプロジェクトに保存してエージェントに渡せます")
+            if kind == "pdf" and not agent.id.startswith("claude_code"):
+                refuse(item, "PDFをChatで受け取れるのはClaude Codeだけです。Codeならプロジェクトに保存して渡せます")
+            continue
+        if kind == "file":
+            refuse(item, "この形式はモデルに送れません。画像・PDF・テキストのファイルを添付してください")
+        if kind not in getattr(provider, "attachment_kinds", {"text"}):
+            refuse(item, "この実行元にはこの形式を送れません" if kind != "pdf" else "この実行元にはPDFを送れません")
+        if kind == "image" and model is not None and model.vision is False:
+            refuse(item, "このモデルは画像に対応していません")
 
 
 @router.post("/{conversation_id}/messages", status_code=202)
@@ -326,6 +361,33 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
         else:
             raise HTTPException(status_code=400, detail="code_needs_agent")
     model_info = await state.registry.model(body.provider, body.model) if provider else None
+    if not body.text.strip() and not body.attachments:
+        raise HTTPException(status_code=422, detail="メッセージを入力するか、ファイルを添付してください")
+    try:
+        attached = await run_in_threadpool(files.resolve, settings.omni_data_dir, body.attachments)
+    except files.AttachmentError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    check_attachments(attached, mode, provider, model_info, agent)
+    # What an agent receives: in Code the files are copied into the project and listed, in Chat text files are
+    # written into the message and images (PDFs for Claude Code) go as the agent's own input.
+    agent_text, agent_files = body.text, []
+    if agent is not None and attached:
+        if mode == "code":
+            target = projects.project_path(settings.omni_projects_dir, project)
+            try:
+                where = await run_in_threadpool(files.copy_into, target, settings.omni_data_dir, attached)
+            except (OSError, files.AttachmentError) as exc:
+                raise HTTPException(status_code=409, detail="添付ファイルをプロジェクトに保存できませんでした") from exc
+            agent_text = "\n\n".join(part for part in (body.text, files.listing(where, attached)) if part)
+        else:
+            texts = []
+            for item in attached:
+                if item["kind"] == "text":
+                    data = await run_in_threadpool(files.read, settings.omni_data_dir, item["id"])
+                    texts.append(files.text_part(item["name"], data.decode("utf-8", errors="replace")))
+                else:
+                    agent_files.append({**item, "path": str(files.path(settings.omni_data_dir, item["id"]))})
+            agent_text = "\n\n".join(part for part in (body.text, *texts) if part) or "添付した画像を見てください。"
 
     def prepare() -> dict[str, Any]:
         with state.sessions.begin() as session:
@@ -335,14 +397,15 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                 conversation.pending_inputs = [item for item in conversation.pending_inputs if item["id"] not in consume_inputs]
             seq = (earlier[-1].seq if earlier else 0) + 1
             now = now_ms()
+            content = ([{"type": "text", "text": body.text}] if body.text else []) + [files.block(item) for item in attached]
             user = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq, role="user",
-                           content=[{"type": "text", "text": body.text}], mode=conversation.mode, created_at=now)
+                           content=content, mode=conversation.mode, created_at=now)
             reply = Message(id=str(uuid.uuid4()), conversation_id=conversation.id, seq=seq + 1, role="assistant",
                             content=[], provider=body.provider, model=body.model, agent=agent.id if agent else None,
                             mode=conversation.mode, status="streaming", created_at=now)
             conversation.messages.extend([user, reply])
             if not conversation.title:
-                first_line = body.text.strip().splitlines()[0] if body.text.strip() else ""
+                first_line = body.text.strip().splitlines()[0] if body.text.strip() else attached[0]["name"]
                 conversation.title = first_line[:TITLE_LENGTH]
             conversation.target = {"provider": body.provider, "model": body.model, "effort": body.effort}
             conversation.updated_at = now
@@ -368,8 +431,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
             if native:
                 shared = [m for m in shared if not same_origin(m.native_origin, agent.id, native)]
             fresh = context_state.selected(earlier, conversation.context)
-            prepared.update(native=native, count=len(unseen), prompt=build_prompt(shared, body.text),
-                            fresh_prompt=build_prompt(fresh, body.text), unseen=turn_items(shared),
+            prepared.update(native=native, count=len(unseen), prompt=build_prompt(shared, agent_text),
+                            fresh_prompt=build_prompt(fresh, agent_text), unseen=turn_items(shared),
                             earlier=turn_items(fresh))
             external = session.scalar(select(ExternalSession).where(
                 ExternalSession.conversation_id == conversation.id, ExternalSession.agent == agent.id,
@@ -378,7 +441,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                                                 and conversation.project == external.project)
             if prepared["require_resume"]:
                 external.pending = [*external.pending, {
-                    "text": body.text if agent.id == "codex" else prepared["prompt"],
+                    "text": agent_text if agent.id == "codex" else prepared["prompt"],
                     "user": user.id, "assistant": reply.id}]
             return prepared
 
@@ -453,7 +516,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                 try:
                     await external_sessions.sync(conversation_id, sending=True)
                     await _send_message(conversation_id,
-                        body.model_copy(update={"text": "\n\n".join(item["text"] for item in queued)}),
+                        body.model_copy(update={"text": "\n\n".join(item["text"] for item in queued), "attachments": []}),
                         request, consume_inputs={item["id"] for item in queued})
                     return
                 except Exception:
@@ -466,7 +529,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                         for item in conversation.pending_inputs]
 
     if agent is None:
-        chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort)
+        chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort,
+                                   data_dir=settings.omni_data_dir)
 
         servers = mcp_servers_for(state, prepared["mcp_off"]) if hasattr(provider, "tool_results") else []
         if servers:
@@ -524,12 +588,12 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
     async def agent_stream(run: Run):
         if prepared["count"]:
             yield {"sessionUpdate": "handover", "agent": agent.label, "count": prepared["count"]}
-        turn = Turn(conversation_id=conversation_id, mode=mode, cwd=cwd, model=agent_model, text=body.text,
+        turn = Turn(conversation_id=conversation_id, mode=mode, cwd=cwd, model=agent_model, text=agent_text,
                     prompt=prepared["prompt"], fresh_prompt=prepared["fresh_prompt"], unseen=prepared["unseen"],
                     earlier=prepared["earlier"], native_session=native_box["id"], temporary=prepared["temporary"],
                     effort=body.effort, ask_permission=run.ask, on_session=on_session,
                     require_resume=prepared.get("require_resume", False), on_turn_id=on_turn_id,
-                    on_input_ready=run.set_steer)
+                    on_input_ready=run.set_steer, attachments=agent_files)
         async for update in agent.run(turn):
             yield update
 
@@ -663,7 +727,8 @@ async def compact_native_context(conversation_id: str, body: CompactContext, req
                 if provider and hasattr(provider, "compact"):
                     if not checkpoint_valid or checkpoint["provider"] != body.provider or checkpoint["model"] != body.model:
                         raise HTTPException(400, "この実行元・モデルで会話を続けてから圧縮してください")
-                    query = ChatRequest(model=body.model, messages=checkpoint["messages"], system=checkpoint.get("system"))
+                    query = ChatRequest(model=body.model, messages=checkpoint["messages"], system=checkpoint.get("system"),
+                                        data_dir=state.settings.omni_data_dir)
                     compacted = await provider.compact(query, await state.registry.model(body.provider, body.model))
                     with state.sessions.begin() as session:
                         conversation = find(session, conversation_id)

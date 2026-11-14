@@ -8,6 +8,7 @@ running commands or fetching, so every action goes through the app's policy.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import difflib
 import hashlib
@@ -311,6 +312,21 @@ class OpenCodeAgent:
             return None
         raise MethodNotFound(method)
 
+    def prompt_blocks(self, connection: AcpConnection, prompt: str, turn: Turn) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if not turn.attachments:
+            return blocks
+        capabilities = ((connection.info.get("agentCapabilities") or {}).get("promptCapabilities") or {})
+        if not capabilities.get("image") or any(item["kind"] != "image" for item in turn.attachments):
+            raise ProviderError("bad_request", f"{self.label} は画像の添付に対応していません")
+        try:
+            for item in turn.attachments:
+                blocks.append({"type": "image", "mimeType": item["media_type"],
+                               "data": base64.b64encode(Path(item["path"]).read_bytes()).decode()})
+        except OSError as exc:
+            raise ProviderError("bad_request", "添付ファイルを読み込めませんでした。もう一度添付してください") from exc
+        return blocks
+
     async def run(self, turn: Turn) -> AsyncIterator[Update]:
         connection = await self.connect()
         self.active += 1
@@ -320,7 +336,7 @@ class OpenCodeAgent:
             await self.select_model(connection, session_id, turn)
             queue = connection.listen(session_id, lambda method, params: self.handle(turn, method, params))
             prompting = asyncio.create_task(connection.call(
-                "session/prompt", {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]}))
+                "session/prompt", {"sessionId": session_id, "prompt": self.prompt_blocks(connection, prompt, turn)}))
             try:
                 while True:
                     getter = asyncio.create_task(queue.get())

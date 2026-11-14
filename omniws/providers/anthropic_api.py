@@ -7,6 +7,7 @@ from typing import Any
 
 import anthropic
 
+from ..attachments import expand
 from ..events import Update, message_chunk, thought_chunk, usage_update
 from .base import ChatRequest, ModelInfo, ProviderError
 
@@ -18,6 +19,7 @@ FALLBACK_PREFIXES = ("claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", 
 # On-demand compaction (beta): the returned signed block replaces the summarized messages.
 COMPACT_BETA = "compact-2026-09-04"
 COMPACT_MAX_TOKENS = 8192
+ATTACHMENT_KINDS = frozenset({"image", "pdf", "text"})
 
 
 def supported(capability: Any) -> bool:
@@ -45,7 +47,7 @@ def request_options(request: ChatRequest, model: ModelInfo | None) -> dict[str, 
     options: dict[str, Any] = {
         "model": request.model,
         "max_tokens": min(model.max_output or MAX_TOKENS, MAX_TOKENS) if model else MAX_TOKENS,
-        "messages": request.messages,
+        "messages": expand(request.messages, request.data_dir, "anthropic", ATTACHMENT_KINDS),
     }
     if request.system:
         options["system"] = request.system
@@ -100,6 +102,7 @@ class AnthropicProvider:
     id = "anthropic"
     label = "Claude API"
     kind = "api"
+    attachment_kinds = ATTACHMENT_KINDS
 
     def __init__(self, api_key: str, client: anthropic.AsyncAnthropic | None = None) -> None:
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=2)

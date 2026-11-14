@@ -2,9 +2,10 @@ import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
-import { Check, Copy, GitBranch } from 'lucide-react'
-import { errorText, textOf, type Block, type Executor, type Message, type ToolCall, type Usage } from '../api'
+import { Check, Copy, Download, File as FileIcon, GitBranch } from 'lucide-react'
+import { attachmentsOf, attachmentUrl, errorText, textOf, type AttachmentInfo, type Block, type Executor, type Message, type ToolCall, type Usage } from '../api'
 import { PlanSummary } from './PlanBar'
+import { sizeLabel } from '../attach'
 import { isReading, ReadGroup, ToolCard } from './ToolCard'
 
 const STATUS_LABEL: Record<string, string> = { cancelled: '停止しました', interrupted: 'サーバーの再起動で中断しました' }
@@ -153,6 +154,30 @@ function pieces(blocks: Block[], live: boolean): Piece[] {
   return out
 }
 
+const KIND_LABEL: Record<AttachmentInfo['kind'], string> = { image: '画像', pdf: 'PDF', text: 'テキスト', file: 'ファイル' }
+
+/** Files sent with a message: photos as thumbnails that open in full, everything else as a download. */
+function Attachments({ files }: { files: AttachmentInfo[] }) {
+  return <ul className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-2" aria-label="添付ファイル">
+    {files.map((file) => <li key={file.id}>
+      {file.kind === 'image'
+        ? <a href={attachmentUrl(file.id)} target="_blank" rel="noopener noreferrer" title={file.name}
+            className="block overflow-hidden rounded-xl border border-border bg-surface">
+            <img src={attachmentUrl(file.id)} alt={file.name} loading="lazy" className="max-h-48 max-w-[16rem] object-contain" />
+          </a>
+        : <a href={attachmentUrl(file.id, true)} download={file.name} title={`${file.name} をダウンロード`}
+            className="flex max-w-[16rem] items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 text-sm hover:bg-raised">
+            <FileIcon className="size-4 shrink-0 text-muted" aria-hidden />
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate">{file.name}</span>
+              <span className="text-xs text-muted">{KIND_LABEL[file.kind]} · {sizeLabel(file.size)}</span>
+            </span>
+            <Download className="size-3.5 shrink-0 text-muted" aria-hidden />
+          </a>}
+    </li>)}
+  </ul>
+}
+
 export default function MessageView({ message, providers, streaming, onFork, onRetryElsewhere }: {
   message: Message
   providers: Executor[]
@@ -161,9 +186,11 @@ export default function MessageView({ message, providers, streaming, onFork, onR
   onRetryElsewhere?: () => void
 }) {
   if (message.role === 'user') {
+    const files = attachmentsOf(message)
     return (
       <div className="group flex flex-col items-end">
-        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-raised px-4 py-2.5">{textOf(message)}</div>
+        {files.length > 0 && <Attachments files={files} />}
+        {textOf(message) && <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-raised px-4 py-2.5">{textOf(message)}</div>}
         {textOf(message) && (
           <span className="mt-1 flex text-xs md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
             <CopyButton text={textOf(message)} />

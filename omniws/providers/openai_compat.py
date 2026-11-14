@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx2 as httpx
 
+from ..attachments import expand
 from ..events import Update, message_chunk, thought_chunk, usage_update
 from .base import ChatRequest, ModelInfo, ProviderError, error_for_status
 
@@ -42,6 +43,8 @@ class OpenAICompatProvider:
         self.ollama_root = ollama_root.rstrip("/") if ollama_root else None
         self.headers = {**(headers or {}), **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
         self.transport = transport
+        # PDFs as file parts: OpenAI and OpenRouter. Images still need a model that can see them.
+        self.attachment_kinds = frozenset({"image", "text", *(["pdf"] if id in ("openai", "openrouter") else [])})
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=TIMEOUT, headers=self.headers, transport=self.transport)
@@ -71,7 +74,8 @@ class OpenAICompatProvider:
         return sorted(models, key=lambda model: model.id)
 
     def body(self, request: ChatRequest) -> dict[str, Any]:
-        messages = ([{"role": "system", "content": request.system}] if request.system else []) + request.messages
+        messages = ([{"role": "system", "content": request.system}] if request.system else []) + \
+            expand(request.messages, request.data_dir, "chat", self.attachment_kinds)
         body: dict[str, Any] = {"model": request.model, "messages": messages, "stream": True,
                                 "stream_options": {"include_usage": True}}
         if request.effort:

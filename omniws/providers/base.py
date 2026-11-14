@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
@@ -44,6 +45,8 @@ class ChatRequest:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     assistant_turn: dict[str, Any] | None = None
     replay_messages: list[dict[str, Any]] | None = None
+    # Where attachment references in `messages` are read from (OMNI_DATA_DIR); None leaves a note instead
+    data_dir: Path | None = None
 
 
 class ProviderError(Exception):

@@ -28,7 +28,8 @@ def describe(message: Message) -> str:
 def describe_part(message: Message, role: str, content: list[dict]) -> str:
     text = "".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
     if role == "user":
-        return f"[user]\n{text}"
+        files = [f"[添付: {block.get('name')}]" for block in content if block.get("type") == "attachment"]
+        return "\n".join(["[user]", *([text] if text else []), *files])
     who = " / ".join(part for part in (message.agent, message.model) if part)
     tools = [tool_summary(block) for block in content if block.get("type") == "tool_call"]
     lines = [f"[assistant: {who}]" if who else "[assistant]"]

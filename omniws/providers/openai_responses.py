@@ -3,6 +3,7 @@ import json
 import httpx2 as httpx
 from .openai_compat import OpenAICompatProvider, error_message
 from .base import ProviderError, error_for_status
+from ..attachments import expand
 from ..events import message_chunk, thought_chunk, usage_update
 
 
@@ -20,8 +21,11 @@ class OpenAIResponsesProvider(OpenAICompatProvider):
                 result.append(message)
         return result
 
+    def expanded(self, request):
+        return expand(request.messages, request.data_dir, "responses", self.attachment_kinds)
+
     async def compact(self, request, model=None):
-        body = {"model": request.model, "input": self.inputs(request.messages)}
+        body = {"model": request.model, "input": self.inputs(self.expanded(request))}
         if request.system:
             body["instructions"] = request.system
         async with self.client() as client:
@@ -34,7 +38,7 @@ class OpenAIResponsesProvider(OpenAICompatProvider):
                 raise ProviderError("network", "圧縮サービスに接続できません") from exc
 
     async def stream(self, request, model=None):
-        body = {"model": request.model, "input": self.inputs(request.messages), "stream": True,
+        body = {"model": request.model, "input": self.inputs(self.expanded(request)), "stream": True,
                 "store": False, "include": ["reasoning.encrypted_content"]}
         if request.system:
             body["instructions"] = request.system

@@ -16,8 +16,11 @@ export type ToolCall = {
   note?: string
 }
 
+export type AttachmentInfo = { id: string; name: string; media_type: string; size: number; kind: 'image' | 'pdf' | 'text' | 'file' }
+
 export type Block =
   | { type: 'text' | 'thinking' | 'user_input'; text: string }
+  | ({ type: 'attachment' } & AttachmentInfo)
   | ToolCall
   | { type: 'plan'; entries: PlanEntry[] }
   | { type: 'handover'; agent: string; count: number }
@@ -334,6 +337,30 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return response.json() as Promise<T>
 }
 
+async function failure(response: Response): Promise<ApiError> {
+  let detail: unknown = response.statusText
+  try {
+    detail = (await response.json()).detail ?? detail
+  } catch {
+    /* not JSON */
+  }
+  return new ApiError(response.status, typeof detail === 'string' ? detail : JSON.stringify(detail))
+}
+
+/** Upload one file to attach to the next message. The server decides its kind from the content. */
+export async function uploadAttachment(file: Blob, name: string): Promise<AttachmentInfo> {
+  const form = new FormData()
+  form.append('file', file, name)
+  const response = await fetch('/api/attachments', { method: 'POST', credentials: 'same-origin', body: form })
+  if (!response.ok) throw await failure(response)
+  return response.json() as Promise<AttachmentInfo>
+}
+
+export const attachmentUrl = (id: string, download = false) => `/api/attachments/${encodeURIComponent(id)}${download ? '?download=true' : ''}`
+
+export const attachmentsOf = (message: { content: Block[] }): AttachmentInfo[] =>
+  message.content.filter((block): block is { type: 'attachment' } & AttachmentInfo => block.type === 'attachment')
+
 export const api = {
   compactContext: (id: string, target: Target) => request<ContextSummary>('POST', `/api/conversations/${id}/context`, target),
   compactNativeContext: (id: string, target: Target) => request<{ ok: boolean }>('POST', `/api/conversations/${id}/context/native`, target),
@@ -389,7 +416,7 @@ export const api = {
   fork: (id: string, messageId?: string) =>
     request<Conversation>('POST', `/api/conversations/${id}/fork`, { message_id: messageId ?? null }),
   reorder: (ids: string[]) => request<{ ok: boolean }>('PUT', '/api/conversations/order', { ids }),
-  send: (id: string, body: { text: string; provider: string; model: string; effort?: string | null }) =>
+  send: (id: string, body: { text: string; provider: string; model: string; effort?: string | null; attachments?: string[] }) =>
     request<{ run_id: string; user_message: Message; assistant_message: Message }>(
       'POST', `/api/conversations/${id}/messages`, body),
   cancel: (runId: string) => request<{ cancelled: boolean }>('POST', `/api/runs/${runId}/cancel`),

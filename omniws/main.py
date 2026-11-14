@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, app_settings
-from .api import conversations, executors, inputs, projects, runs, sessions, terminals, worktrees
+from .api import attachments, conversations, executors, inputs, projects, runs, sessions, terminals, worktrees
 from .api import settings as settings_api
 from .auth import Auth, OriginCheck, SecurityHeaders, require_user
 from .auth import router as auth_router
@@ -70,6 +70,10 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         app_settings.load(app.state.sessions, settings, app.state.env_settings)
         app.state.auth.load(app.state.sessions)
         try:
+            attachments.collect(app.state)
+        except Exception:
+            log.exception("cleaning up attachments failed")
+        try:
             yield
         finally:
             # Runs save partial replies and return queued inputs while cancelling. Keep the
@@ -112,7 +116,7 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.include_router(health)
     app.include_router(auth_router)
     signed_in = [Depends(require_user)]
-    for router in (conversations.router, runs.router, executors.router, projects.router, sessions.router,
+    for router in (attachments.router, conversations.router, runs.router, executors.router, projects.router, sessions.router,
                    settings_api.router, inputs.router, terminals.router, worktrees.router):
         app.include_router(router, dependencies=signed_in)
     app.include_router(terminals.ws_router)
