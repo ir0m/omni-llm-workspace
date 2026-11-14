@@ -177,9 +177,6 @@ export type FilePreview = { path: string; size: number } & (
   | { kind: 'binary' }
 )
 export type SavedFile = { path: string; size: number; hash: string }
-export type TemplateInfo = { name: string; source: 'builtin' | 'user'; label: string; description: string; project: string | null; files: string[]; skipped: string[] }
-export type TemplatePlan = { template: TemplateInfo; project: string
-  files: { path: string; status: 'new' | 'changed' | 'same' | 'blocked'; hash: string | null; diff: string | null }[] }
 export type Diagnostic = { path: string | null; line: number | null; severity: 'error' | 'warning'; message: string }
 export type CompileResult = { ok: boolean; engine: string; seconds: number; log: string; diagnostics: Diagnostic[]; has_pdf: boolean }
 export type NoteSummary = { path: string; title: string; aliases: string[]; tags: string[]; headings: string[] }
@@ -405,8 +402,8 @@ export const api = {
   config: () => request<AppConfig>('GET', '/api/config'),
   executors: (refresh = false) => request<Executor[]>('GET', `/api/executors?refresh=${refresh}`),
   projects: () => request<ProjectList>('GET', '/api/projects'),
-  files: (project: string, path = '', offset = 0) => request<FileTree>('GET',
-    `/api/projects/${projectPath(project)}/files?${new URLSearchParams({ path, offset: String(offset) })}`),
+  files: (project: string, path = '', offset = 0, showHidden = true) => request<FileTree>('GET',
+    `/api/projects/${projectPath(project)}/files?${new URLSearchParams({ path, offset: String(offset), show_hidden: String(showHidden) })}`),
   file: (project: string, path: string) => request<FilePreview>('GET',
     `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path })}`),
   /** The whole file (up to the editor's limit) with the hash a save must send back */
@@ -429,13 +426,7 @@ export const api = {
     `/api/projects/${projectPath(project)}/pdf?${new URLSearchParams({ path, v: String(version) })}`,
   notes: (project: string, path: string, q: string) => request<NoteIndex>('GET',
     `/api/projects/${projectPath(project)}/notes?${new URLSearchParams({ path, q })}`),
-  templates: () => request<{ group: string; templates: TemplateInfo[] }>('GET', '/api/templates'),
-  createTemplate: (name: string, source: string | null) => request<TemplateInfo>('POST', '/api/templates', { name, source }),
-  templatePlan: (name: string, project: string) => request<TemplatePlan>('GET',
-    `/api/templates/${encodeURIComponent(name)}/plan?${new URLSearchParams({ project })}`),
-  applyTemplate: (name: string, project: string, files: { path: string; base_hash: string | null }[]) =>
-    request<{ files: { path: string; ok: boolean; message: string | null }[] }>('POST', `/api/templates/${encodeURIComponent(name)}/apply`, { project, files }),
-  createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean; template?: string | null }) =>
+  createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
     request<{ name: string }>('POST', '/api/projects', body),
   cloneProject: (body: { url: string; name?: string }) => request<{ name: string }>('POST', '/api/projects/clone', body),
 }

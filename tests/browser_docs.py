@@ -59,6 +59,50 @@ def check(base: str, artifacts: Path) -> None:
         page.keyboard.press("Enter")
         page.get_by_role("button", name="Docs（文書の編集）").click()
         page.get_by_label("プロジェクト", exact=True).select_option("demo")
+        expect(
+            page.get_by_role("button", name="テンプレート", exact=True)
+        ).to_have_count(0)
+        tree = page.get_by_role("complementary", name="ファイル一覧")
+        hidden = page.get_by_role("checkbox", name="ドットファイルを表示")
+        expect(hidden).not_to_be_checked()
+        expect(tree.get_by_role("button", name="Home.md", exact=True)).to_be_visible()
+        expect(tree.get_by_role("button", name=".gitignore", exact=True)).to_have_count(
+            0
+        )
+        expect(tree.get_by_role("button", name=".agents", exact=True)).to_have_count(0)
+        hidden.check()
+        expect(
+            tree.get_by_role("button", name=".gitignore", exact=True)
+        ).to_be_visible()
+        expect(tree.get_by_role("button", name=".env", exact=True)).to_have_count(0)
+        expect(tree.get_by_role("button", name=".git", exact=True)).to_have_count(0)
+        tree.get_by_role("button", name=".agents", exact=True).click()
+        tree.get_by_role("button", name=".scratch.md", exact=True).click()
+        expect(page.locator(".cm-content")).to_contain_text("# Scratch")
+        page.locator(".cm-content").click()
+        page.keyboard.press("Control+End")
+        page.keyboard.type("\nkeep this draft")
+        hidden.uncheck()
+        expect(tree.get_by_role("button", name=".agents", exact=True)).to_have_count(0)
+        expect(page.locator(".cm-content")).to_contain_text("keep this draft")
+        expect(page.get_by_label("未保存", exact=True)).to_be_visible()
+        hidden.check()
+        expect(tree.get_by_role("button", name=".agents", exact=True)).to_be_visible()
+        expect(page.locator(".cm-content")).to_contain_text("keep this draft")
+        page.get_by_role("button", name="保存", exact=True).click()
+        expect(page.get_by_label("未保存", exact=True)).to_have_count(0)
+        page.reload()
+        hidden = page.get_by_role("checkbox", name="ドットファイルを表示")
+        expect(hidden).to_be_checked()
+        expect(page.locator(".cm-content")).to_contain_text("keep this draft")
+        hidden.uncheck()
+        page.reload()
+        expect(
+            page.get_by_role("checkbox", name="ドットファイルを表示")
+        ).not_to_be_checked()
+        expect(page.get_by_role("button", name=".gitignore", exact=True)).to_have_count(
+            0
+        )
         page.get_by_role("button", name="Home.md", exact=True).click()
         expect(
             page.get_by_role("button", name="次のノート", exact=True)
@@ -145,9 +189,21 @@ def check(base: str, artifacts: Path) -> None:
             "document.documentElement.scrollWidth <= window.innerWidth"
         )
         page.screenshot(path=str(artifacts / "mobile.png"))
+        page.get_by_role("button", name="ファイル一覧", exact=True).click()
+        mobile_hidden = page.get_by_role("checkbox", name="ドットファイルを表示")
+        expect(mobile_hidden).to_be_visible()
+        mobile_hidden.check()
+        expect(
+            page.get_by_role("button", name=".gitignore", exact=True)
+        ).to_be_visible()
+        mobile_hidden.uncheck()
+        expect(page.get_by_role("button", name=".gitignore", exact=True)).to_have_count(
+            0
+        )
+        page.screenshot(path=str(artifacts / "mobile-files.png"))
         assert not errors, errors
         print(
-            "PASS: notes, embeds, cycle guard, math, mermaid, search, backlinks, completion, Marp, notes, projection sync/blackout/disconnect, PDF export, actual Typst/TeX pixels, mobile; page errors:",
+            "PASS: dotfile toggle, retained drafts and visibility preferences, notes, embeds, cycle guard, math, mermaid, search, backlinks, completion, Marp, notes, projection sync/blackout/disconnect, PDF export, actual Typst/TeX pixels, mobile; page errors:",
             errors,
         )
         b.close()
@@ -163,10 +219,15 @@ def main() -> None:
         folder = Path(temporary)
         project = folder / "projects/demo"
         project.mkdir(parents=True)
+        (project / ".gitignore").write_text("*.pyc\n")
+        (project / ".env").write_text("TEST_SECRET=not-for-the-file-list\n")
+        (project / ".git").mkdir()
+        (project / ".agents").mkdir()
+        (project / ".agents/.scratch.md").write_text("# Scratch\n")
         (project / "Home.md").write_text(HOME_NOTE)
         (project / "Target.md").write_text(TARGET_NOTE)
         (project / "slides.md").write_text(
-            (ROOT / "templates/document/docs/slides.md").read_text()
+            "---\nmarp: true\npaginate: true\n---\n\n# 題名\n\n{{date}}\n\n---\n\n## 伝えたいこと\n\n- 要点を3つまで\n\n---\n\n## まとめ\n\n<!-- 発表者ノート: ここに話す内容を書きます -->\n"
         )
         (project / "main.typ").write_text("= Title\nHello $x^2$")
         (project / "main.tex").write_text(

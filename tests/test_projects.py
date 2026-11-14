@@ -129,3 +129,11 @@ def test_nested_projects_through_the_api(client):
     conversation = client.post("/api/conversations", json={"mode": "code", "project": "仕事/顧客A/app"})
     assert conversation.status_code == 201 and conversation.json()["project"] == "仕事/顧客A/app"
     assert client.post("/api/projects", json={"name": "仕事/顧客A/app/inner"}).status_code == 400
+
+
+def test_project_creation_no_longer_exposes_templates(client):
+    assert "templates" not in client.get("/api/config").json()["capabilities"]
+    assert not any(route.path.startswith("/api/templates") for route in client.app.routes if hasattr(route, "path"))
+    assert client.post("/api/templates", json={"name": "example"}).status_code == 404
+    from omniws.api.projects import NewProject
+    assert "template" not in NewProject.model_fields

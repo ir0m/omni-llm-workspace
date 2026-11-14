@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .. import compile as compiler
-from .. import notes, projects, templates
+from .. import notes, projects
 from ..config import Settings
 from ..files import EDIT_LIMIT, FileError, ProjectFiles
 
@@ -20,8 +20,6 @@ class NewProject(BaseModel):
     git_init: bool = True
     readme: bool = False
     gitignore: bool = False
-    # Fill the new folder from this template
-    template: str | None = Field(default=None, max_length=100)
 
 
 class Clone(BaseModel):
@@ -54,16 +52,10 @@ async def create_project(body: NewProject, request: Request):
     if not config.omni_allow_project_create:
         raise HTTPException(status_code=403, detail={"code": "not_allowed", "message": "OMNI_ALLOW_PROJECT_CREATE"})
     try:
-        if body.template:  # an unknown template must not leave an empty folder behind
-            await run_in_threadpool(templates.load, config, body.template)
         path = await run_in_threadpool(projects.create_project, config.omni_projects_dir, body.name, body.git_init,
                                        body.readme, body.gitignore)
-        if body.template:
-            await run_in_threadpool(templates.fill_new_project, config, body.template, projects.check_name(body.name))
     except projects.ProjectError as exc:
         raise failure(exc) from exc
-    except (templates.TemplateError, FileError) as exc:
-        raise HTTPException(status_code=exc.status, detail={"code": "template", "message": exc.message}) from exc
     return {"name": projects.check_name(body.name)}
 
 
@@ -111,8 +103,9 @@ async def browse(request: Request, name: str, method: str, *args):
 
 @router.get("/{name:path}/files")
 async def list_files(name: str, request: Request, path: str = Query(default="", max_length=4096),
-                     offset: int = Query(default=0, ge=0), limit: int = Query(default=200, ge=1, le=500)):
-    return await browse(request, name, "tree", path, offset, limit)
+                     offset: int = Query(default=0, ge=0), limit: int = Query(default=200, ge=1, le=500),
+                     show_hidden: bool = True):
+    return await browse(request, name, "tree", path, offset, limit, show_hidden)
 
 
 @router.get("/{name:path}/file")

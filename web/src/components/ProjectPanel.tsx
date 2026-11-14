@@ -13,33 +13,34 @@ const failure = (error: unknown) => error instanceof Error ? error.message : 'шк
 const sizeLabel = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB`
   : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
 
-type TreeProps = { project: string; path: string; depth: number; version: number; selected: string | null; onSelect: (path: string) => void }
+type TreeProps = { project: string; path: string; depth: number; version: number; selected: string | null; onSelect: (path: string) => void; showHidden?: boolean }
 
 export function Tree(props: TreeProps) {
-  const { project, path, version, depth, selected, onSelect } = props
+  const { project, path, version, depth, selected, onSelect, showHidden = true } = props
   const [tree, setTree] = useState<FileTree | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [more, setMore] = useState(false)
   const generation = useRef(0)
+  useEffect(() => { setTree(null) }, [project, path, showHidden])
   useEffect(() => {
     const current = ++generation.current
     setError(null)
     setMore(false)
-    api.files(project, path).then((data) => {
+    api.files(project, path, 0, showHidden).then((data) => {
       if (current === generation.current) setTree(data)
     }).catch((reason) => {
       if (current === generation.current) setError(failure(reason))
     })
     return () => { generation.current++ }
-  }, [project, path, version])
+  }, [project, path, version, showHidden])
 
   async function loadMore() {
     if (tree?.next_offset == null || more) return
     const current = generation.current
     setMore(true)
     try {
-      const next = await api.files(project, path, tree.next_offset)
+      const next = await api.files(project, path, tree.next_offset, showHidden)
       if (current === generation.current) setTree({ ...next, entries: [...tree.entries, ...next.entries] })
     } catch (reason) {
       if (current === generation.current) setError(failure(reason))

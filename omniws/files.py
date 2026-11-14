@@ -106,12 +106,14 @@ class ProjectFiles:
             if descriptor is not None:
                 os.close(descriptor)
 
-    def tree(self, path: str, offset: int, limit: int) -> dict:
+    def tree(self, path: str, offset: int, limit: int, show_hidden: bool = True) -> dict:
         parts = parts_of(path)
         with self.opened(path, directory=True) as (descriptor, _):
             entries = []
             with os.scandir(descriptor) as scan:
                 for entry in scan:
+                    if not show_hidden and entry.name.startswith("."):
+                        continue
                     child = (*parts, entry.name)
                     if not self.allowed(child):
                         continue

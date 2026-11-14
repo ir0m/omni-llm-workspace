@@ -191,7 +191,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
       {settingsOpen && <SettingsDialog executors={executors} onClose={() => setSettingsOpen(false)} onChanged={settingsChanged}
         onDiscover={() => discover(true)} onDeletedAll={() => { select(null); refresh() }} />}
       {docsOpened && <div className={docs ? 'flex min-w-0 flex-1' : 'hidden'}>
-        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} templates={!!config?.capabilities?.includes('templates')} onProjectsChanged={loadProjects} onOpenMenu={() => setDrawerOpen(true)} onError={handle} /></Suspense>
+        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} onOpenMenu={() => setDrawerOpen(true)} onError={handle} /></Suspense>
       </div>}
       <div className={docs ? 'hidden' : 'flex min-w-0 flex-1'}>
       <ChatView

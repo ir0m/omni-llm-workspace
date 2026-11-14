@@ -1,9 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Columns2, Eye, Play, Presentation, FilePlus, FolderPlus, FolderTree, LayoutTemplate, Menu, Pencil, RefreshCw, Save, SquarePen, Trash2 } from 'lucide-react'
+import { Columns2, Eye, Play, Presentation, FilePlus, FolderPlus, FolderTree, Menu, Pencil, RefreshCw, Save, SquarePen, Trash2 } from 'lucide-react'
 import { api, ApiError, type CompileResult, type NoteIndex, type ProjectList } from '../api'
 import NoteMarkdown from './NoteMarkdown'
 import { Tree } from './ProjectPanel'
-import TemplateDialog from './TemplateDialog'
 import { isMarp, type DeckSpec } from '../deckSpec'
 
 const Editor = lazy(() => import('./Editor'))
@@ -17,7 +16,7 @@ type Loaded = { path: string; text: string; hash: string | null; truncated: bool
 type Other = { path: string; kind: 'image' | 'pdf' | 'binary'; tooLarge: boolean }
 type Form = { kind: 'file' | 'folder' | 'rename'; value: string }
 
-function remembered(): { project?: string; path?: string } {
+function remembered(): { project?: string; path?: string; showHidden?: boolean } {
   try {
     const value = JSON.parse(localStorage.getItem(SAVED) ?? '{}')
     return value && typeof value === 'object' ? value : {}
@@ -30,12 +29,13 @@ const isCompiled = (path: string) => /\.(typ|tex)$/i.test(path)
 const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path)
 const folderOf = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : ''
 
-export default function DocsView({ projects, canEdit, canCompile, templates, onProjectsChanged, onOpenMenu, onError }: {
-  projects: ProjectList | null; canEdit: boolean; canCompile: boolean; templates: boolean; onProjectsChanged: () => void
+export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, onError }: {
+  projects: ProjectList | null; canEdit: boolean; canCompile: boolean
   onOpenMenu: () => void; onError: (error: unknown) => void
 }) {
   const [project, setProject] = useState<string | null>(() => remembered().project ?? null)
   const [path, setPath] = useState<string | null>(() => remembered().path ?? null)
+  const [showHidden, setShowHidden] = useState(() => remembered().showHidden === true)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [other, setOther] = useState<Other | null>(null)
   const [loading, setLoading] = useState(false)
@@ -52,7 +52,6 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
   const [indexError, setIndexError] = useState<string | null>(null)
   const [fragment, setFragment] = useState('')
   const [form, setForm] = useState<Form | null>(null)
-  const [templatesOpen, setTemplatesOpen] = useState(false)
   const [built, setBuilt] = useState<{ key: string; result: CompileResult } | null>(null)
   const [building, setBuilding] = useState(false)
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -68,6 +67,9 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
   const names = projects?.projects.map((item) => item.name) ?? []
   const known = project !== null && names.includes(project)
   const editable = canEdit && !!loaded && !loaded.truncated && loaded.hash !== null
+  const listed = (file: { path: string }) => showHidden || !file.path.split('/').some((part) => part.startsWith('.'))
+  const searchResults = noteIndex.results.filter(listed)
+  const backlinks = noteIndex.backlinks.filter(listed)
 
   useEffect(() => {
     let active = true
@@ -98,8 +100,8 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
   }, [projects])
 
   useEffect(() => {
-    try { localStorage.setItem(SAVED, JSON.stringify({ project, path })) } catch { /* storage disabled or full */ }
-  }, [project, path])
+    try { localStorage.setItem(SAVED, JSON.stringify({ project, path, showHidden })) } catch { /* storage disabled or full */ }
+  }, [project, path, showHidden])
 
   useEffect(() => {
     if (!dirty) return
@@ -293,9 +295,6 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
         {path}{dirty && <span className="ml-1 text-warn" aria-label="未保存">●</span>}
       </span>
       <span className="flex-1 sm:hidden" />
-      {templates && <button aria-label="テンプレート" onClick={() => setTemplatesOpen(true)} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-sm text-muted hover:text-fg" title="テンプレートから追加・テンプレートの編集">
-        <LayoutTemplate className="size-4" aria-hidden /><span className="hidden sm:inline">テンプレート</span>
-      </button>}
       {deck?.kind === 'pdf' && <a href={api.pdfUrl(deck.project, deck.path, deck.version)} download={deck.path.split('/').pop()!.replace(/\.(typ|tex)$/i, '.pdf')}
         className="rounded-lg border border-border px-2 py-1.5 text-sm text-muted">PDF保存</a>}
       {deck && <button aria-label="発表" onClick={() => setPresenting(deck)} title={dirty ? '保存済みの内容で発表します' : '発表者ビューを開く'}
@@ -345,18 +344,22 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
             <button onClick={() => setVersion((value) => value + 1)} className={icon} aria-label="ファイル一覧を更新" title="ファイル一覧を更新"><RefreshCw className="size-4" aria-hidden /></button>
           </div>
           <div className="space-y-2 border-b border-border p-2">
+            <label className="flex items-center gap-2 text-xs text-muted" title=". で始まるファイル・フォルダを一覧に表示します。秘密情報などのアクセス制限は変わりません。">
+              <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
+              ドットファイルを表示
+            </label>
             <input type="search" aria-label="ノートを検索" placeholder="ノートの名前・本文・タグを検索" value={query}
               onChange={(event) => setQuery(event.target.value)} className="w-full rounded border border-border bg-bg px-2 py-1 text-xs" />
             {indexError && <p role="alert" className="text-xs text-danger">{indexError}</p>}
             {noteIndex.truncated && <p className="text-xs text-muted">索引の上限に達しました。一部のノートは対象外です。</p>}
             {query && <ul aria-label="検索結果" className="max-h-60 overflow-auto text-xs">
-              {noteIndex.results.map((item) => <li key={item.path}><button className="w-full rounded p-1 text-left hover:bg-raised" onClick={() => open(item.path)}>
+              {searchResults.map((item) => <li key={item.path}><button className="w-full rounded p-1 text-left hover:bg-raised" onClick={() => open(item.path)}>
                 <span className="block text-accent">{item.path}</span><span className="block truncate text-muted">{item.snippet}</span>
               </button></li>)}
-              {!noteIndex.results.length && <li className="text-muted">一致するノートがありません</li>}
+              {!searchResults.length && <li className="text-muted">一致するノートがありません</li>}
             </ul>}
-            {path && <details open><summary className="cursor-pointer text-xs text-muted">バックリンク（{noteIndex.backlinks.length}）</summary>
-              <ul aria-label="バックリンク" className="max-h-32 overflow-auto text-xs">{noteIndex.backlinks.map((item) => <li key={item.path}>
+            {path && <details open><summary className="cursor-pointer text-xs text-muted">バックリンク（{backlinks.length}）</summary>
+              <ul aria-label="バックリンク" className="max-h-32 overflow-auto text-xs">{backlinks.map((item) => <li key={item.path}>
                 <button className="truncate text-accent" onClick={() => open(item.path)}>{item.path}</button>
               </li>)}</ul>
             </details>}
@@ -374,7 +377,7 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
             </div>
           </form>}
           <div className="min-h-0 flex-1 overflow-y-auto py-1">
-            <Tree project={project!} path="" depth={0} version={version} selected={path} onSelect={open} />
+            <Tree project={project!} path="" depth={0} version={version} selected={path} onSelect={open} showHidden={showHidden} />
           </div>
         </> : <p className="p-4 text-sm text-muted">{projects ? 'プロジェクトを選択してください' : '読み込み中…'}</p>}
       </aside>}
@@ -392,7 +395,7 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
             {loaded.truncated && <p className="border-b border-border px-3 py-1.5 text-xs text-muted">2 MiBを超えるため先頭だけを表示しています。このファイルは編集できません。</p>}
             <Suspense fallback={<p className="p-4 text-sm text-muted">エディタを読み込み中…</p>}>
               <Editor docKey={`${project}:${loaded.path}:${loaded.serial}`} path={loaded.path} text={loaded.text}
-                readOnly={!editable} jump={jump} notePaths={noteIndex.notes.map((note) => note.path)} onChange={changed} onSave={() => void save()} />
+                readOnly={!editable} jump={jump} notePaths={noteIndex.notes.filter(listed).map((note) => note.path)} onChange={changed} onSave={() => void save()} />
             </Suspense>
           </div>
           {hasPreview && <div aria-label="プレビュー" tabIndex={0}
@@ -438,12 +441,5 @@ export default function DocsView({ projects, canEdit, canCompile, templates, onP
       </div>
     </div>
     {presenting && <Suspense fallback={null}><Presenter spec={presenting} onClose={() => setPresenting(null)} /></Suspense>}
-    {templatesOpen && <TemplateDialog project={known ? project : null} canEdit={canEdit} onClose={() => setTemplatesOpen(false)}
-      onApplied={() => setVersion((value) => value + 1)}
-      onOpenProject={(name) => {
-        if (!leave()) return
-        onProjectsChanged()  // a template made a moment ago is a new project
-        setDirty(false); setProject(name); setPath('TEMPLATE.md'); setForm(null); setTreeOpen(true); setTemplatesOpen(false)
-      }} />}
   </main>
 }

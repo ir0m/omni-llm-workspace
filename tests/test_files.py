@@ -39,6 +39,38 @@ def test_tree_is_lazy_sorted_and_paginated(client, project):
     assert "main.py" not in [entry["name"] for entry in response["entries"]]
 
 
+def test_dotfiles_are_filtered_before_pagination_and_in_nested_folders(client, project):
+    (project / ".agents").mkdir()
+    (project / ".gitignore").write_text("*.pyc\n")
+    (project / "src" / ".hidden.md").write_text("hidden note")
+    (project / "src" / "visible.md").write_text("visible note")
+    entries = []
+    offset = 0
+    while offset is not None:
+        page = client.get("/api/projects/app/files", params={"show_hidden": False, "limit": 1, "offset": offset}).json()
+        entries.extend(item["name"] for item in page["entries"])
+        offset = page["next_offset"]
+    assert entries == ["src", "delete.txt", "rename.txt"]
+    visible = client.get("/api/projects/app/files", params={"path": "src", "show_hidden": False}).json()
+    assert [item["name"] for item in visible["entries"]] == ["main.py", "visible.md"]
+    shown = client.get("/api/projects/app/files", params={"show_hidden": True}).json()
+    assert {".agents", ".gitignore"} <= {item["name"] for item in shown["entries"]}
+    # Existing callers (Code, compilation, note indexing) keep their previous default.
+    assert shown == client.get("/api/projects/app/files").json()
+
+
+@pytest.mark.parametrize("show_hidden", [False, True])
+def test_dotfile_visibility_does_not_relax_private_path_checks(client, project, show_hidden):
+    for name in (".env", ".env.local", "private.key"):
+        (project / name).write_text("secret")
+    (project / ".env.example").write_text("EXAMPLE=\n")
+    result = client.get("/api/projects/app/files", params={"show_hidden": show_hidden}).json()
+    names = {item["name"] for item in result["entries"]}
+    assert not names & {".env", ".env.local", ".git", "private.key"}
+    assert (".env.example" in names) == show_hidden
+    assert client.get("/api/projects/app/files", params={"path": ".git", "show_hidden": show_hidden}).status_code == 403
+
+
 @pytest.mark.parametrize("path", ["../outside", "src/../../outside", ".env", ".env.local", "data/db.sqlite",
                                       ".git/config", ".aws/credentials", "id_ed25519", "private.pem"])
 def test_private_paths_and_traversal_are_denied(client, project, path):
