@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from .config import Settings
-from .projects import ProjectError, project_path
+from .projects import ProjectError, is_project, project_path
 
 TEXT_LIMIT = 256 * 1024
 IMAGE_LIMIT = 8 * 1024 * 1024
@@ -58,7 +58,7 @@ class ProjectFiles:
             registered = project_path(settings.omni_projects_dir, name)
         except ProjectError as exc:
             raise FileError(400, "プロジェクト名が正しくありません") from exc
-        if not registered.is_dir():
+        if not registered.is_dir() or not is_project(settings.omni_projects_dir, name):
             raise FileError(404, "プロジェクトが見つかりません")
         # A registered project itself may be a symlink, as in the self-hosted installation.
         self.root = registered.resolve()

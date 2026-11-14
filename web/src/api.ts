@@ -146,7 +146,20 @@ export type Project = {
   modified_at: number
 }
 
-export type ProjectList = { root: string; can_create: boolean; can_clone: boolean; projects: Project[] }
+export type ProjectList = {
+  root: string
+  can_create: boolean
+  can_clone: boolean
+  projects: Project[]
+  /** Folders that only hold projects, as "work" and "work/client" */
+  groups?: string[]
+  max_depth?: number
+}
+
+/** A project name in a URL path: "work/client/app" keeps its slashes, each part encoded. */
+export function projectPath(name: string): string {
+  return name.split('/').map(encodeURIComponent).join('/')
+}
 
 export type FileEntry = { name: string; path: string; kind: 'directory' | 'file' | 'link' | 'other'; size: number }
 export type FileTree = { path: string; entries: FileEntry[]; next_offset: number | null }
@@ -274,14 +287,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  branches: (project: string) => request<ProjectBranches>('GET', `/api/projects/${encodeURIComponent(project)}/branches`),
-  worktrees: (project: string) => request<{ items: Worktree[]; can_create: boolean }>('GET', `/api/projects/${encodeURIComponent(project)}/worktrees`),
-  createWorktree: (project: string, title: string, base: string) => request<Worktree>('POST', `/api/projects/${encodeURIComponent(project)}/worktrees`, { title, base }),
-  worktreeResult: (project: string) => request<WorktreeResult>('GET', `/api/projects/${encodeURIComponent(project)}/worktree-result`),
-  worktreeDiff: (project: string, path: string) => request<FileDiff>('GET', `/api/projects/${encodeURIComponent(project)}/worktree-diff?${new URLSearchParams({ path })}`),
-  mergeWorktree: (project: string) => request<{ ok: boolean }>('POST', `/api/projects/${encodeURIComponent(project)}/worktree-merge`),
-  removeWorktree: (project: string) => request<{ ok: boolean }>('DELETE', `/api/projects/${encodeURIComponent(project)}/worktree`),
-  terminal: (project: string) => request<{ enabled: boolean }>('GET', `/api/projects/${encodeURIComponent(project)}/terminal`),
+  branches: (project: string) => request<ProjectBranches>('GET', `/api/projects/${projectPath(project)}/branches`),
+  worktrees: (project: string) => request<{ items: Worktree[]; can_create: boolean }>('GET', `/api/projects/${projectPath(project)}/worktrees`),
+  createWorktree: (project: string, title: string, base: string) => request<Worktree>('POST', `/api/projects/${projectPath(project)}/worktrees`, { title, base }),
+  worktreeResult: (project: string) => request<WorktreeResult>('GET', `/api/projects/${projectPath(project)}/worktree-result`),
+  worktreeDiff: (project: string, path: string) => request<FileDiff>('GET', `/api/projects/${projectPath(project)}/worktree-diff?${new URLSearchParams({ path })}`),
+  mergeWorktree: (project: string) => request<{ ok: boolean }>('POST', `/api/projects/${projectPath(project)}/worktree-merge`),
+  removeWorktree: (project: string) => request<{ ok: boolean }>('DELETE', `/api/projects/${projectPath(project)}/worktree`),
+  terminal: (project: string) => request<{ enabled: boolean }>('GET', `/api/projects/${projectPath(project)}/terminal`),
   me: () => request<Me>('GET', '/api/auth/me'),
   passkeyRegisterOptions: (token?: string) =>
     request<{ challenge_id: string; options: PublicKeyCredentialCreationOptionsJSON }>('POST', '/api/auth/passkey/register/options', { token: token ?? null }),
@@ -334,14 +347,14 @@ export const api = {
   executors: (refresh = false) => request<Executor[]>('GET', `/api/executors?refresh=${refresh}`),
   projects: () => request<ProjectList>('GET', '/api/projects'),
   files: (project: string, path = '', offset = 0) => request<FileTree>('GET',
-    `/api/projects/${encodeURIComponent(project)}/files?${new URLSearchParams({ path, offset: String(offset) })}`),
+    `/api/projects/${projectPath(project)}/files?${new URLSearchParams({ path, offset: String(offset) })}`),
   file: (project: string, path: string) => request<FilePreview>('GET',
-    `/api/projects/${encodeURIComponent(project)}/file?${new URLSearchParams({ path })}`),
+    `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path })}`),
   imageUrl: (project: string, path: string, version: number) =>
-    `/api/projects/${encodeURIComponent(project)}/image?${new URLSearchParams({ path, v: String(version) })}`,
-  changes: (project: string) => request<ProjectChanges>('GET', `/api/projects/${encodeURIComponent(project)}/changes`),
+    `/api/projects/${projectPath(project)}/image?${new URLSearchParams({ path, v: String(version) })}`,
+  changes: (project: string) => request<ProjectChanges>('GET', `/api/projects/${projectPath(project)}/changes`),
   diff: (project: string, path: string, stage: ChangeStage) => request<FileDiff>('GET',
-    `/api/projects/${encodeURIComponent(project)}/diff?${new URLSearchParams({ path, stage })}`),
+    `/api/projects/${projectPath(project)}/diff?${new URLSearchParams({ path, stage })}`),
   createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
     request<{ name: string }>('POST', '/api/projects', body),
   cloneProject: (body: { url: string; name?: string }) => request<{ name: string }>('POST', '/api/projects/clone', body),

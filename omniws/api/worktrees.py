@@ -10,6 +10,7 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from ..db import now_ms
+from ..projects import check_name
 from ..files import FileError, ProjectFiles, parts_of, PATCH_LIMIT, PATCH_LINES
 from ..models import AppSetting, Conversation
 from ..agents.base import PermissionRequest
@@ -66,7 +67,7 @@ async def operation(fn):
         raise HTTPException(exc.status, exc.message) from exc
 
 
-@router.get("/{name}/worktrees")
+@router.get("/{name:path}/worktrees")
 async def list_worktrees(name: str, request: Request):
     state = request.app.state
     def read():
@@ -83,7 +84,7 @@ async def list_worktrees(name: str, request: Request):
     return await operation(read)
 
 
-@router.get("/{name}/branches")
+@router.get("/{name:path}/branches")
 async def branches(name: str, request: Request):
     def read():
         files = ProjectFiles(request.app.state.settings, name)
@@ -111,7 +112,7 @@ async def branches(name: str, request: Request):
     return await operation(read)
 
 
-@router.post("/{name}/worktrees", status_code=201)
+@router.post("/{name:path}/worktrees", status_code=201)
 async def create_worktree(name: str, body: NewWorktree, request: Request):
     state = request.app.state
     async with state.worktree_lock:
@@ -124,7 +125,9 @@ async def create_worktree(name: str, body: NewWorktree, request: Request):
                 raise HTTPException(400, "開始地点が正しくありません")
             base = files.git("rev-parse", "--verify", "--end-of-options", body.base + "^{commit}").decode().strip()
             suffix = uuid.uuid4().hex[:12]
-            child = f"{name[:60]}-task-{suffix}"
+            # Next to the source, in the same group: "work/client/app" -> "work/client/app-task-…"
+            parent, _, leaf = check_name(name).rpartition("/")
+            child = f"{parent + '/' if parent else ''}{leaf[:60]}-task-{suffix}"
             branch = "omni/" + suffix
             path = state.settings.omni_projects_dir / child
             # Checkout filters are programs too. Do not run configured helpers behind the GUI action.
@@ -161,7 +164,7 @@ async def create_worktree(name: str, body: NewWorktree, request: Request):
         return await operation(create)
 
 
-@router.get("/{name}/worktree-result")
+@router.get("/{name:path}/worktree-result")
 async def result(name: str, request: Request):
     state = request.app.state
     def read():
@@ -179,7 +182,7 @@ async def result(name: str, request: Request):
     return await operation(read)
 
 
-@router.get("/{name}/worktree-diff")
+@router.get("/{name:path}/worktree-diff")
 async def diff(name: str, request: Request, path: str):
     state = request.app.state
     def read():
@@ -201,7 +204,7 @@ async def diff(name: str, request: Request, path: str):
     return await operation(read)
 
 
-@router.post("/{name}/worktree-merge")
+@router.post("/{name:path}/worktree-merge")
 async def merge(name: str, request: Request):
     state = request.app.state
     async with state.worktree_lock, state.external_sessions.lock:
@@ -222,7 +225,7 @@ async def merge(name: str, request: Request):
         return await operation(integrate)
 
 
-@router.delete("/{name}/worktree")
+@router.delete("/{name:path}/worktree")
 async def remove(name: str, request: Request):
     state = request.app.state
     async with state.worktree_lock, state.external_sessions.lock:

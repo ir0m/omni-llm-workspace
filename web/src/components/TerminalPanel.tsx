@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { api } from '../api'
+import { api, projectPath } from '../api'
 
 export default function TerminalPanel({ project }: { project: string }) {
   const host = useRef<HTMLDivElement>(null)
@@ -24,7 +24,7 @@ export default function TerminalPanel({ project }: { project: string }) {
     term.loadAddon(fit)
     term.open(host.current)
     terminal.current = term
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/projects/${encodeURIComponent(project)}/terminal/ws`)
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/projects/${projectPath(project)}/terminal/ws`)
     ws.binaryType = 'arraybuffer'
     socket.current = ws
     setStatus('接続中…')

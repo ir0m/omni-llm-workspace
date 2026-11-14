@@ -72,7 +72,7 @@ class NewConversation(BaseModel):
     title: str = Field(default="", max_length=200)
     temporary: bool = False
     mode: Literal["chat", "code"] = "chat"
-    project: str | None = Field(default=None, max_length=100)
+    project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
 
 
@@ -83,7 +83,7 @@ class ConversationPatch(BaseModel):
     temporary: bool | None = None
     mode: Literal["chat", "code"] | None = None
     # A project name, or "" to take the conversation out of its project
-    project: str | None = Field(default=None, max_length=100)
+    project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
     clear_allow_rules: bool = False
 

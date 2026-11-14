@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/projects")
 
 
 class NewProject(BaseModel):
-    name: str = Field(max_length=100)
+    name: str = Field(max_length=200)
     git_init: bool = True
     readme: bool = False
     gitignore: bool = False
@@ -23,7 +23,7 @@ class NewProject(BaseModel):
 
 class Clone(BaseModel):
     url: str = Field(max_length=500)
-    name: str | None = Field(default=None, max_length=100)
+    name: str | None = Field(default=None, max_length=200)
 
 
 def settings(request: Request) -> Settings:
@@ -40,7 +40,9 @@ async def list_projects(request: Request):
     config = settings(request)
     return {"root": str(config.omni_projects_dir), "can_create": config.omni_allow_project_create,
             "can_clone": config.omni_allow_git_clone,
-            "projects": await projects.list_projects(config.omni_projects_dir)}
+            "projects": await projects.list_projects(config.omni_projects_dir),
+            "groups": await run_in_threadpool(projects.list_groups, config.omni_projects_dir),
+            "max_depth": projects.MAX_DEPTH}
 
 
 @router.post("", status_code=201)
@@ -53,7 +55,7 @@ async def create_project(body: NewProject, request: Request):
                                        body.readme, body.gitignore)
     except projects.ProjectError as exc:
         raise failure(exc) from exc
-    return {"name": path.name}
+    return {"name": projects.check_name(body.name)}
 
 
 @router.post("/clone", status_code=201)
@@ -65,7 +67,7 @@ async def clone_project(body: Clone, request: Request):
         path = await run_in_threadpool(projects.clone_project, config.omni_projects_dir, body.url, body.name)
     except projects.ProjectError as exc:
         raise failure(exc) from exc
-    return {"name": path.name}
+    return {"name": path.relative_to(config.omni_projects_dir).as_posix()}
 
 
 async def browse(request: Request, name: str, method: str, *args):
@@ -77,30 +79,30 @@ async def browse(request: Request, name: str, method: str, *args):
     return await run_in_threadpool(read)
 
 
-@router.get("/{name}/files")
+@router.get("/{name:path}/files")
 async def list_files(name: str, request: Request, path: str = Query(default="", max_length=4096),
                      offset: int = Query(default=0, ge=0), limit: int = Query(default=200, ge=1, le=500)):
     return await browse(request, name, "tree", path, offset, limit)
 
 
-@router.get("/{name}/file")
+@router.get("/{name:path}/file")
 async def read_file(name: str, request: Request, path: str = Query(max_length=4096)):
     return await browse(request, name, "file", path)
 
 
-@router.get("/{name}/image")
+@router.get("/{name:path}/image")
 async def read_image(name: str, request: Request, path: str = Query(max_length=4096)):
     data, media_type = await browse(request, name, "image", path)
     return Response(data, media_type=media_type, headers={"Cache-Control": "no-store",
                     "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
 
 
-@router.get("/{name}/changes")
+@router.get("/{name:path}/changes")
 async def list_changes(name: str, request: Request):
     return await browse(request, name, "changes")
 
 
-@router.get("/{name}/diff")
+@router.get("/{name:path}/diff")
 async def read_diff(name: str, request: Request, path: str = Query(max_length=4096),
                     stage: Literal["staged", "unstaged", "untracked"] = "unstaged"):
     return await browse(request, name, "diff", path, stage)

@@ -15,18 +15,18 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
-from ..projects import ProjectError, project_path
+from ..projects import ProjectError, is_project, project_path
 
 router = APIRouter(prefix="/api/projects")
 ws_router = APIRouter()
 
 
-@router.get("/{name}/terminal")
+@router.get("/{name:path}/terminal")
 def status(name: str, request: Request):
     return {"enabled": request.app.state.settings.omni_allow_terminal}
 
 
-@ws_router.websocket("/api/projects/{name}/terminal/ws")
+@ws_router.websocket("/api/projects/{name:path}/terminal/ws")
 async def terminal(ws: WebSocket, name: str):
     state = ws.app.state
     # Cookies alone do not prevent cross-site WebSocket hijacking. Require an explicit approved origin.
@@ -40,7 +40,7 @@ async def terminal(ws: WebSocket, name: str):
         return
     try:
         cwd = project_path(state.settings.omni_projects_dir, name).resolve(strict=True)
-        if not cwd.is_dir():
+        if not cwd.is_dir() or not is_project(state.settings.omni_projects_dir, name):
             raise ValueError()
     except (ProjectError, OSError, ValueError):
         await ws.close(code=1008)

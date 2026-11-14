@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
   Pin, PinOff, Plus, RefreshCw, Search, Settings, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
@@ -50,6 +50,36 @@ function groupConversations(conversations: Conversation[], projects: ProjectList
   return groups
 }
 
+/** Nested projects ("work/client/app") sit in collapsible folders, in the order of their most recent activity. */
+type FolderNode = { path: string; name: string; children: TreeNode[] }
+type TreeNode = { kind: 'section'; group: Group } | { kind: 'folder'; folder: FolderNode }
+
+function buildTree(groups: Group[]): TreeNode[] {
+  const root: TreeNode[] = []
+  const folders = new Map<string, FolderNode>()
+  for (const group of groups) {
+    const parts = group.project ? group.project.split('/') : []
+    let level = root
+    let path = ''
+    for (const part of parts.slice(0, -1)) {
+      path = path ? `${path}/${part}` : part
+      let folder = folders.get(path)
+      if (!folder) {
+        folder = { path, name: part, children: [] }
+        folders.set(path, folder)
+        level.push({ kind: 'folder', folder })
+      }
+      level = folder.children
+    }
+    level.push({ kind: 'section', group })
+  }
+  return root
+}
+
+function countItems(nodes: TreeNode[]): number {
+  return nodes.reduce((sum, node) => sum + (node.kind === 'section' ? node.group.items.length : countItems(node.folder.children)), 0)
+}
+
 type Props = {
   conversations: Conversation[]
   projects: ProjectList | null
@@ -96,6 +126,84 @@ export default function Sidebar(props: Props) {
     api.reorder(order).then(props.onChanged).catch(props.onError)
   }
 
+  function renderSection(group: Group, depth: number) {
+    const isCollapsed = !search && collapsed.has(group.key)
+    return (
+      <section key={group.key} className="mb-1">
+        <div className="group/header flex items-center rounded-lg pr-1 text-xs text-muted hover:bg-raised/40">
+          <button onClick={() => toggle(group.key)} className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1.5 text-left">
+            {isCollapsed ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : <ChevronDown className="size-3.5 shrink-0" aria-hidden />}
+            <span title={group.project ?? undefined} className={`truncate font-medium ${group.missing ? 'line-through' : 'text-fg/80'}`}>
+              {depth > 0 && group.project ? group.project.split('/').pop() : group.label}
+            </span>
+            {group.detail && <span className="shrink-0 truncate">· {group.detail}</span>}
+            <span className="ml-auto shrink-0 pl-1">{group.items.length}</span>
+          </button>
+          {group.key !== 'pinned' && !group.missing && (
+            <button
+              onClick={() => props.onNew(group.project
+                ? { temporary: false, mode: 'code', project: group.project }
+                : { temporary: false, mode: 'chat', project: null })}
+              className="rounded p-1 hover:text-fg"
+              title={group.project ? `${group.project} で新しいCode` : '新しいチャット'}
+              aria-label={group.project ? `${group.project} で新しいCode` : '新しいチャット'}
+            >
+              <Plus className="size-3.5" aria-hidden />
+            </button>
+          )}
+        </div>
+        {!isCollapsed && group.items.map((item, index) => (
+          <Item
+            key={item.id}
+            item={item}
+            nativeActions={props.nativeActions}
+            active={item.id === selected}
+            showProject={group.key === 'pinned'}
+            onSelect={() => props.onSelect(item.id)}
+            draggable={!search}
+            onDragStart={() => setDragging({ id: item.id, group: group.key })}
+            onDrop={() => {
+              if (dragging && dragging.group === group.key && dragging.id !== item.id) move(group, dragging.id, index)
+              setDragging(null)
+            }}
+            onMove={(delta) => move(group, item.id, index + delta)}
+            onChanged={props.onChanged}
+            onError={props.onError}
+            onForked={(id) => {
+              props.onChanged()
+              props.onSelect(id)
+            }}
+            onDeleted={() => {
+              props.onChanged()
+              if (item.id === selected) props.onSelect(null)
+            }}
+          />
+        ))}
+      </section>
+    )
+  }
+
+  function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {
+    return nodes.map((node) => {
+      if (node.kind === 'section') return renderSection(node.group, depth)
+      const { folder } = node
+      const key = `folder:${folder.path}`
+      const isCollapsed = !search && collapsed.has(key)
+      return (
+        <div key={key} className="mb-1">
+          <button onClick={() => toggle(key)} title={folder.path}
+            className="flex w-full min-w-0 items-center gap-1 rounded-lg px-1.5 py-1.5 text-left text-xs text-muted hover:bg-raised/40">
+            {isCollapsed ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : <ChevronDown className="size-3.5 shrink-0" aria-hidden />}
+            <Folder className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate font-medium text-fg/80">{folder.name}</span>
+            <span className="ml-auto shrink-0 pl-1">{countItems(folder.children)}</span>
+          </button>
+          {!isCollapsed && <div className="ml-2.5 border-l border-border pl-1.5">{renderNodes(folder.children, depth + 1)}</div>}
+        </div>
+      )
+    })
+  }
+
   return (
     <>
       {open && <div className="fixed inset-0 z-20 bg-black/40 md:hidden" onClick={onClose} aria-hidden />}
@@ -135,60 +243,7 @@ export default function Sidebar(props: Props) {
         </div>
         <nav className="flex-1 overflow-y-auto px-2 pb-2">
           {props.serverUpdateNeeded && <p role="status" className="px-2 py-2 text-xs text-muted">新機能の反映待ちです。サーバーを再起動すると利用できます。</p>}
-          {groups.map((group) => {
-            const isCollapsed = !search && collapsed.has(group.key)
-            return (
-              <section key={group.key} className="mb-1">
-                <div className="group/header flex items-center rounded-lg pr-1 text-xs text-muted hover:bg-raised/40">
-                  <button onClick={() => toggle(group.key)} className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1.5 text-left">
-                    {isCollapsed ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : <ChevronDown className="size-3.5 shrink-0" aria-hidden />}
-                    <span className={`truncate font-medium ${group.missing ? 'line-through' : 'text-fg/80'}`}>{group.label}</span>
-                    {group.detail && <span className="shrink-0 truncate">· {group.detail}</span>}
-                    <span className="ml-auto shrink-0 pl-1">{group.items.length}</span>
-                  </button>
-                  {group.key !== 'pinned' && !group.missing && (
-                    <button
-                      onClick={() => props.onNew(group.project
-                        ? { temporary: false, mode: 'code', project: group.project }
-                        : { temporary: false, mode: 'chat', project: null })}
-                      className="rounded p-1 hover:text-fg"
-                      title={group.project ? `${group.project} で新しいCode` : '新しいチャット'}
-                      aria-label={group.project ? `${group.project} で新しいCode` : '新しいチャット'}
-                    >
-                      <Plus className="size-3.5" aria-hidden />
-                    </button>
-                  )}
-                </div>
-                {!isCollapsed && group.items.map((item, index) => (
-                  <Item
-                    key={item.id}
-                    item={item}
-                    nativeActions={props.nativeActions}
-                    active={item.id === selected}
-                    showProject={group.key === 'pinned'}
-                    onSelect={() => props.onSelect(item.id)}
-                    draggable={!search}
-                    onDragStart={() => setDragging({ id: item.id, group: group.key })}
-                    onDrop={() => {
-                      if (dragging && dragging.group === group.key && dragging.id !== item.id) move(group, dragging.id, index)
-                      setDragging(null)
-                    }}
-                    onMove={(delta) => move(group, item.id, index + delta)}
-                    onChanged={props.onChanged}
-                    onError={props.onError}
-                    onForked={(id) => {
-                      props.onChanged()
-                      props.onSelect(id)
-                    }}
-                    onDeleted={() => {
-                      props.onChanged()
-                      if (item.id === selected) props.onSelect(null)
-                    }}
-                  />
-                ))}
-              </section>
-            )
-          })}
+          {renderNodes(buildTree(groups), 0)}
           {props.conversations.length === 0 && <p className="px-2 py-6 text-center text-sm text-muted">会話はまだありません</p>}
         </nav>
         <div className="flex items-center justify-between border-t border-border p-2 text-sm">

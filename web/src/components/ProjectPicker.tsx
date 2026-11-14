@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useBackClose } from '../backClose'
-import { ChevronDown, Download, Folder, FolderPlus, X } from 'lucide-react'
+import { ChevronDown, Download, Folder, FolderOpen, FolderPlus, X } from 'lucide-react'
 import { api, ApiError, type ProjectList } from '../api'
 
 function GitState({ git }: { git: ProjectList['projects'][number]['git'] }) {
@@ -11,6 +11,27 @@ function GitState({ git }: { git: ProjectList['projects'][number]['git'] }) {
       {git.changes ? ` · 変更${git.changes}` : ''}
     </span>
   )
+}
+
+type Row = { kind: 'folder'; path: string; name: string; depth: number }
+  | { kind: 'project'; project: ProjectList['projects'][number]; name: string; depth: number }
+
+/** The server lists nested projects depth-first ("top", "work/a/app", "work/a/site"): a header row per folder. */
+function treeRows(projects: ProjectList['projects']): Row[] {
+  const rows: Row[] = []
+  let previous: string[] = []
+  for (const project of projects) {
+    const parts = project.name.split('/')
+    const folders = parts.slice(0, -1)
+    let same = 0
+    while (same < folders.length && same < previous.length && folders[same] === previous[same]) same += 1
+    for (let depth = same; depth < folders.length; depth += 1) {
+      rows.push({ kind: 'folder', path: folders.slice(0, depth + 1).join('/'), name: folders[depth], depth })
+    }
+    rows.push({ kind: 'project', project, name: parts[parts.length - 1], depth: folders.length })
+    previous = folders
+  }
+  return rows
 }
 
 export default function ProjectPicker({ list, value, onChange, onCreated }: {
@@ -42,7 +63,7 @@ export default function ProjectPicker({ list, value, onChange, onCreated }: {
         aria-label="プロジェクト"
       >
         <Folder className="size-4 shrink-0" aria-hidden />
-        <span className="truncate">{value ?? 'プロジェクトを選択'}</span>
+        <span className="truncate" title={value ?? undefined}>{value ? value.split('/').pop() : 'プロジェクトを選択'}</span>
         <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       </button>
       {value && !current && list && <span className="sr-only">フォルダが見つかりません</span>}
@@ -52,15 +73,23 @@ export default function ProjectPicker({ list, value, onChange, onCreated }: {
           <div style={position} className="fixed z-50 w-72 rounded-lg border border-border bg-bg py-1 text-sm shadow-lg">
             <div className="max-h-72 overflow-y-auto">
               {list?.projects.length === 0 && <p className="px-3 py-2 text-muted">{list.root} にフォルダがありません</p>}
-              {list?.projects.map((project) => (
+              {list && treeRows(list.projects).map((row) => row.kind === 'folder' ? (
+                <div key={`folder:${row.path}`} title={row.path} style={{ paddingLeft: `${0.75 + row.depth}rem` }}
+                  className="flex items-center gap-2 py-1 pr-3 text-xs text-muted">
+                  <FolderOpen className="size-3.5 shrink-0" aria-hidden />
+                  <span className="truncate">{row.name}</span>
+                </div>
+              ) : (
                 <button
-                  key={project.name}
-                  onClick={() => { setOpen(false); onChange(project.name) }}
-                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-raised ${project.name === value ? 'bg-raised' : ''}`}
+                  key={row.project.name}
+                  onClick={() => { setOpen(false); onChange(row.project.name) }}
+                  title={row.project.name}
+                  style={{ paddingLeft: `${0.75 + row.depth}rem` }}
+                  className={`flex w-full items-center gap-2 py-1.5 pr-3 text-left hover:bg-raised ${row.project.name === value ? 'bg-raised' : ''}`}
                 >
                   <Folder className="size-4 shrink-0 text-muted" aria-hidden />
-                  <span className="truncate">{project.name}</span>
-                  <span className="ml-auto shrink-0 text-xs"><GitState git={project.git} /></span>
+                  <span className="truncate">{row.name}</span>
+                  <span className="ml-auto shrink-0 text-xs"><GitState git={row.project.git} /></span>
                 </button>
               ))}
             </div>
@@ -79,15 +108,16 @@ export default function ProjectPicker({ list, value, onChange, onCreated }: {
         </>
       )}
       {dialog && list && (
-        <ProjectDialog kind={dialog} root={list.root} onClose={() => setDialog(null)} onDone={(name) => { setDialog(null); onCreated(name) }} />
+        <ProjectDialog kind={dialog} root={list.root} maxDepth={list.max_depth ?? 5} onClose={() => setDialog(null)} onDone={(name) => { setDialog(null); onCreated(name) }} />
       )}
     </div>
   )
 }
 
-function ProjectDialog({ kind, root, onClose, onDone }: {
+function ProjectDialog({ kind, root, maxDepth, onClose, onDone }: {
   kind: 'create' | 'clone'
   root: string
+  maxDepth: number
   onClose: () => void
   onDone: (name: string) => void
 }) {
@@ -132,8 +162,10 @@ function ProjectDialog({ kind, root, onClose, onDone }: {
         )}
         <label className="mt-4 block text-sm">
           名前{kind === 'clone' && <span className="text-muted">（空ならリポジトリ名）</span>}
-          <input autoFocus={kind === 'create'} value={name} onChange={(event) => setName(event.target.value)} className={field} />
+          <input autoFocus={kind === 'create'} value={name} onChange={(event) => setName(event.target.value)} className={field}
+            placeholder={kind === 'create' ? '例: 仕事/顧客A/app' : '例: 仕事/顧客A/site'} />
         </label>
+        <p className="mt-1 text-xs text-muted">/ で区切ると、フォルダの中に作ります（{maxDepth}階層まで）。途中のフォルダはグループになり、Code では選べません。</p>
         {kind === 'create' && (
           <div className="mt-3 space-y-1.5 text-sm">
             <label className="flex items-center gap-2"><input type="checkbox" checked={gitInit} onChange={(event) => setGitInit(event.target.checked)} /> git init する</label>

@@ -130,3 +130,19 @@ def test_branch_list_detached_empty_and_non_git(client, repo):
     assert client.get('/api/projects/empty/branches').json() == {'branches': [], 'current_ref': None, 'head': None}
     client.post('/api/projects', json={'name': 'plain', 'git_init': False})
     assert client.get('/api/projects/plain/branches').status_code == 400
+
+
+def test_worktree_of_a_nested_project_stays_in_its_group(client):
+    client.post('/api/projects', json={'name': '仕事/顧客A/app', 'git_init': True, 'readme': True})
+    path = client.app.state.settings.omni_projects_dir / '仕事' / '顧客A' / 'app'
+    git(path, 'add', '.')
+    git(path, 'commit', '-m', 'Initial')
+    response = client.post('/api/projects/仕事/顧客A/app/worktrees', json={'title': '入れ子の作業'})
+    assert response.status_code == 201, response.text
+    item = response.json()
+    assert item['name'].startswith('仕事/顧客A/app-task-') and item['source'] == '仕事/顧客A/app'
+    assert (path.parent / item['name'].rsplit('/', 1)[1] / 'README.md').exists()
+    names = [entry['name'] for entry in client.get('/api/projects').json()['projects']]
+    assert item['name'] in names
+    assert client.get(f"/api/projects/{item['name']}/worktree-result").status_code == 200
+    assert client.delete(f"/api/projects/{item['name']}/worktree").status_code == 200
