@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from .. import projects
+from .. import projects, native_actions
 from ..agents import policy
 from ..agents.base import Agent, Turn
 from ..agents.handover import build_prompt, turn_items
@@ -20,7 +20,7 @@ from ..agents.opencode import FREE, PROVIDER_IDS, OpenCodeAgent
 from ..db import now_ms
 from ..history import chat_history
 from ..models import AgentSession, Conversation, ExternalSession, Message
-from ..external_sessions import origin, remember_deleted
+from ..external_sessions import origin, remember_deleted, same_origin
 from ..providers.base import ChatProvider, ChatRequest
 from ..runs import Run, RunManager
 
@@ -38,6 +38,7 @@ def db(request: Request):
 def conversation_dict(conversation: Conversation, runs: RunManager) -> dict[str, Any]:
     active = runs.active_for(conversation.id)
     return {"id": conversation.id, "title": conversation.title, "mode": conversation.mode,
+            "has_native_session": any(item.agent in DIRECT_AGENTS and not item.ephemeral for item in conversation.agent_sessions),
             "project": conversation.project, "temporary": conversation.temporary, "pinned": conversation.pinned,
             "hidden": conversation.hidden, "forked_from": conversation.forked_from, "target": conversation.target,
             "approval_mode": conversation.approval_mode, "allow_rules": conversation.allow_rules or [],
@@ -153,7 +154,23 @@ async def get_conversation(conversation_id: str, request: Request):
 
 
 @router.patch("/{conversation_id}")
-def update_conversation(conversation_id: str, body: ConversationPatch, request: Request,
+async def update_conversation(conversation_id: str, body: ConversationPatch, request: Request,
+                              session: Session = Depends(db)):
+    async with request.app.state.external_sessions.lock:
+        conversation = find(session, conversation_id)
+        if body.title is not None:
+            if request.app.state.runs.active_for(conversation_id):
+                raise HTTPException(409, "reply_in_progress")
+            try:
+                await native_actions.rename(request.app.state, session, conversation, body.title.strip())
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(502, "CLI側の改名に失敗しました。一部だけ変更された可能性があります。更新して確認してください")
+        return _update_conversation(conversation_id, body, request, session)
+
+
+def _update_conversation(conversation_id: str, body: ConversationPatch, request: Request,
                         session: Session = Depends(db)):
     conversation = find(session, conversation_id)
     changes = body.model_dump(exclude_none=True)
@@ -173,7 +190,22 @@ def update_conversation(conversation_id: str, body: ConversationPatch, request: 
 
 
 @router.delete("/{conversation_id}")
-def delete_conversation(conversation_id: str, request: Request, session: Session = Depends(db)):
+async def delete_conversation(conversation_id: str, request: Request, native: bool = False, session: Session = Depends(db)):
+    async with request.app.state.external_sessions.lock:
+        conversation = find(session, conversation_id)
+        if native:
+            if request.app.state.runs.active_for(conversation_id):
+                raise HTTPException(409, "reply_in_progress")
+            try:
+                await native_actions.delete(request.app.state, session, conversation)
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(502, "CLI側の削除に失敗しました。アプリの会話は残しています。CLI側の状態を確認してください")
+        return _delete_conversation(conversation_id, request, session)
+
+
+def _delete_conversation(conversation_id: str, request: Request, session: Session = Depends(db)):
     conversation = find(session, conversation_id)
     runs: RunManager = request.app.state.runs
     active = runs.active_for(conversation_id)
@@ -186,7 +218,17 @@ def delete_conversation(conversation_id: str, request: Request, session: Session
 
 
 @router.post("/{conversation_id}/fork", status_code=201)
-def fork_conversation(conversation_id: str, body: Fork, request: Request, session: Session = Depends(db)):
+async def fork_conversation(conversation_id: str, body: Fork, request: Request, session: Session = Depends(db)):
+    async with request.app.state.external_sessions.lock:
+        if request.app.state.runs.active_for(conversation_id):
+            raise HTTPException(409, "reply_in_progress")
+        error = await request.app.state.external_sessions.sync(conversation_id)
+        if error:
+            raise HTTPException(409, error)
+        return await _fork_conversation(conversation_id, body, request, session)
+
+
+async def _fork_conversation(conversation_id: str, body: Fork, request: Request, session: Session = Depends(db)):
     source = find(session, conversation_id)
     messages = [message for message in source.messages if message.status != "streaming"]
     if body.message_id:
@@ -197,14 +239,24 @@ def fork_conversation(conversation_id: str, body: Fork, request: Request, sessio
     now = now_ms()
     copy = Conversation(id=str(uuid.uuid4()), title=f"{source.title or '無題'}（分岐）"[:200], mode=source.mode,
                         project=source.project, temporary=source.temporary, forked_from=source.id,
-                        target=source.target, sort_key=float(now), created_at=now, updated_at=now)
+                        target=source.target, approval_mode=source.approval_mode, sort_key=float(now), created_at=now, updated_at=now)
     session.add(copy)
+    copies = {message.id: str(uuid.uuid4()) for message in messages}
     for message in messages:
-        session.add(Message(id=str(uuid.uuid4()), conversation_id=copy.id, seq=message.seq, role=message.role,
+        session.add(Message(id=copies[message.id], conversation_id=copy.id, seq=message.seq, role=message.role,
                             content=message.content, provider=message.provider, model=message.model,
                             agent=message.agent, mode=message.mode, status=message.status, error=message.error,
                             usage=message.usage, created_at=message.created_at))
-    session.commit()
+    made = []
+    try:
+        made = await native_actions.fork(request.app.state, session, source, copy, messages, copies)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        await native_actions.discard(made)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(502, "CLI側の分岐に失敗しました。元の会話は変更していません") from exc
     return conversation_dict(copy, request.app.state.runs)
 
 
@@ -287,7 +339,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
             record = next((item for item in conversation.agent_sessions if item.agent == agent.id), None)
             native = record.native_id if record and not conversation.temporary else None
             unseen = [message for message in earlier if message.seq > record.synced_seq
-                      and message.native_origin != origin(agent.id, native)] if native else earlier
+                      and not same_origin(message.native_origin, agent.id, native)] if native else earlier
             prepared.update(native=native, count=len(unseen), prompt=build_prompt(unseen, body.text),
                             fresh_prompt=build_prompt(earlier, body.text), unseen=turn_items(unseen),
                             earlier=turn_items(earlier))
@@ -329,6 +381,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
             message = session.get(Message, reply_id)
             if message is not None:
                 message.status, message.content, message.usage, message.error = status, content, usage, error
+                if agent is not None and native_box["id"] and native_box["turn"] and not prepared["temporary"]:
+                    message.native_origin = {**origin(agent.id, native_box["id"]), "turn": native_box["turn"]}
             if prepared.get("require_resume"):
                 external = session.scalar(select(ExternalSession).where(
                     ExternalSession.conversation_id == conversation_id, ExternalSession.agent == agent.id))

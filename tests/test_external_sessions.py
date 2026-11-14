@@ -62,6 +62,9 @@ class NativeAgent:
         self.turns.append(HistoryTurn(native_turn, blocks(prompt), blocks(text), model="m1"))
         yield message_chunk(text)
 
+    async def rename_session(self, native_id, cwd, title):
+        self.renamed = (native_id, title)
+
 
 @pytest.fixture
 def native_client(tmp_path):

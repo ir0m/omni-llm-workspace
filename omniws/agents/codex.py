@@ -503,6 +503,30 @@ class CodexAgent:
             with contextlib.suppress(Exception):
                 await self.refresh_account(force=True)
 
+    async def rename_session(self, native_id: str, cwd: Path, title: str) -> None:
+        connection = await self.connect()
+        await connection.call("thread/name/set", {"threadId": native_id, "name": title}, timeout=30)
+
+    async def fork_session(self, native_id: str, cwd: Path, title: str, last_turn: str | None) -> str:
+        connection = await self.connect()
+        params = {"threadId": native_id, "cwd": str(cwd.resolve()), "approvalPolicy": "untrusted",
+                  "sandbox": "workspace-write", "excludeTurns": True}
+        if last_turn:
+            params["lastTurnId"] = last_turn
+        result = await connection.call("thread/fork", params, timeout=30)
+        new_id = result["thread"]["id"]
+        try:
+            await self.rename_session(new_id, cwd, title)
+        except Exception:
+            await self.delete_session(new_id, cwd)
+            raise
+        return new_id
+
+    async def delete_session(self, native_id: str, cwd: Path) -> None:
+        connection = await self.connect()
+        await connection.call("thread/delete", {"threadId": native_id}, timeout=30)
+        self.open_threads.pop(native_id, None)
+
     async def forget(self, native_session: str, cwd: Path) -> None:
         with contextlib.suppress(Exception):
             connection = await self.connect()

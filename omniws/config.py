@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     omni_approval_default: Literal["ask", "auto_edit", "auto"] = "auto_edit"
     omni_approval_max: Literal["ask", "auto_edit", "auto"] = "auto"
     omni_allow_shell: bool = True
+    # Human-operated terminal: explicitly grants the server user's shell, outside agent policy.
+    omni_allow_terminal: bool = False
+    omni_allow_native_session_changes: bool = True
     # Network access from the agents' sandboxes (package installs, git pull)
     omni_allow_network: bool = True
     # Requests outside the project folder: mode = as the approval mode decides, ask = always confirm, deny = never

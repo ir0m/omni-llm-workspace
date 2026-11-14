@@ -566,7 +566,7 @@ export default function ChatView(props: Props) {
         <UsageMeter executor={executor} />
       </div>
     </main>
-    {panelOpen && mode === 'code' && project && <ProjectPanel key={project} project={project} revision={panelRevision} onClose={() => setPanelOpen(false)} />}
+    {panelOpen && mode === 'code' && project && <ProjectPanel key={project} project={project} revision={panelRevision} capabilities={config?.capabilities ?? []} onChanged={() => { props.onProjectsChanged(); onChanged() }} onClose={() => setPanelOpen(false)} />}
     </div>
   )
 }

@@ -393,6 +393,17 @@ class ClaudeCodeAgent:
             return ProviderError("auth", hint)
         return ProviderError(ERRORS.get(status, "unknown"), text[:300] or "Claude Code でエラーが起きました")
 
+    async def rename_session(self, native_id: str, cwd: Path, title: str) -> None:
+        await asyncio.to_thread(sdk.rename_session, native_id, title, directory=str(cwd.resolve()))
+
+    async def fork_session(self, native_id: str, cwd: Path, title: str, last_turn: str | None) -> str:
+        result = await asyncio.to_thread(sdk.fork_session, native_id, directory=str(cwd.resolve()),
+                                        title=title, up_to_message_id=last_turn)
+        return result.session_id
+
+    async def delete_session(self, native_id: str, cwd: Path) -> None:
+        await asyncio.to_thread(sdk.delete_session, native_id, directory=str(cwd.resolve()))
+
     async def forget(self, native_session: str, cwd: Path) -> None:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(sdk.delete_session, native_session, str(cwd))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, app_settings
-from .api import conversations, executors, inputs, projects, runs, sessions
+from .api import conversations, executors, inputs, projects, runs, sessions, terminals, worktrees
 from .api import settings as settings_api
 from .auth import Auth, OriginCheck, require_user
 from .auth import router as auth_router
@@ -88,6 +89,8 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
         "claude_code": ClaudeCodeAgent(settings, "subscription"), "claude_code_api": ClaudeCodeAgent(settings, "api")}
     app.state.free_models = {}
     app.state.runs = RunManager()
+    app.state.terminals = set()
+    app.state.worktree_lock = asyncio.Lock()
     app.state.external_sessions = ExternalSessions(app.state)
     # Guards against DNS rebinding and cross-site requests: the app will run agents on this machine.
     app.add_middleware(OriginCheck, allowed_hosts=settings.allowed_hosts())
@@ -96,8 +99,9 @@ def create_app(settings: Settings | None = None, web_dist: Path = WEB_DIST, regi
     app.include_router(auth_router)
     signed_in = [Depends(require_user)]
     for router in (conversations.router, runs.router, executors.router, projects.router, sessions.router,
-                   settings_api.router, inputs.router):
+                   settings_api.router, inputs.router, terminals.router, worktrees.router):
         app.include_router(router, dependencies=signed_in)
+    app.include_router(terminals.ws_router)
     mount_web(app, web_dist)
     return app
 

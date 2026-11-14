@@ -156,6 +156,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         <button onClick={closeError} className="shrink-0 text-muted">閉じる</button>
       </div>}
       <Sidebar
+        nativeActions={config?.capabilities?.includes('native_session_actions') ?? false}
         conversations={conversations}
         projects={projects}
         selected={selected}

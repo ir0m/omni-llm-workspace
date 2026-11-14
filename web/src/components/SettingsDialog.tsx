@@ -271,6 +271,8 @@ const OUTSIDE: [OutsideLimit, string][] = [['deny', '常に拒否'], ['ask', '�
 const SWITCH: [boolean, string][] = [[false, '無効'], [true, '有効']]
 
 const GROUPS: { title: string; note?: string; fields: { field: Field; label: string; help?: string; options: [string | boolean, string][] }[] }[] = [
+  { title: '手動の端末', note: 'サーバーユーザーのシェルを直接操作します。エージェント用の承認・コマンド拒否・ディレクトリ・ネットワーク制限とは独立した許可です。',
+    fields: [{ field: 'omni_allow_terminal', label: '対話型端末', help: '.env で許可した場合だけ有効にできます。無効にすると接続中の端末も終了します。', options: SWITCH }] },
   {
     title: 'Code の操作',
     fields: [
@@ -293,6 +295,7 @@ const GROUPS: { title: string; note?: string; fields: { field: Field; label: str
   {
     title: '実行元',
     fields: [
+      { field: 'omni_allow_native_session_changes', label: 'CLI側セッションの改名・分岐・削除', options: SWITCH },
       { field: 'omni_allow_claude_subscription', label: 'Claude のサブスクリプション', help: '個人利用・自己責任', options: SWITCH },
       { field: 'omni_allow_opencode_free', label: 'OpenCode の無料モデル', help: 'コードが OpenCode のサービスに送られます', options: SWITCH },
     ],
@@ -325,11 +328,11 @@ function PermissionsPane({ onChanged }: { onChanged: () => void }) {
     <div>
       <p className="mb-3 text-xs text-muted">.env の値が上限です。ここでは、それより厳しくだけできます。変更はすぐに反映されます。</p>
       <Problem text={error} />
-      {GROUPS.map((group) => (
+      {GROUPS.filter((group) => group.fields.some(({ field }) => field in data.values)).map((group) => (
         <Card key={group.title} title={group.title}>
           {group.note && <p className="text-xs text-muted">{group.note}</p>}
           <ul className="divide-y divide-border">
-            {group.fields.map(({ field, label: name, help, options }) => {
+            {group.fields.filter(({ field }) => field in data.values).map(({ field, label: name, help, options }) => {
               const value = data.values[field]
               const limit = data.limits[field]
               const changed = data.changed.includes(field)
@@ -443,6 +446,7 @@ function ServerPane() {
   const rows: [string, React.ReactNode][] = [
     ['状態', <Status ok>稼働中（{duration(data.uptime_seconds)}）</Status>],
     ['実行中の返答', `${data.active_runs}件`],
+    ['接続中の端末', `${data.active_terminals ?? 0}件`],
     ['バージョン', `${data.version}（Python ${data.python}）`],
     ['起動方法', data.systemd ? 'systemd' : '手動'],
     ['待ち受け', data.listen],
@@ -470,10 +474,10 @@ function ServerPane() {
         </ul>
       </Card>
       <Card title="再起動">
-        <p className="text-xs text-muted">設定やプログラムの更新を反映します。返答の実行中は再起動できません。</p>
+        <p className="text-xs text-muted">設定やプログラムの更新を反映します。返答・端末を終了してから再起動してください。</p>
         {!data.can_restart && <p className="text-xs text-muted">この起動方法では、画面から再起動できません。</p>}
-        <button onClick={restart} disabled={restarting || data.active_runs > 0 || !data.can_restart} className={button}>
-          {restarting ? '再起動中…' : data.active_runs > 0 ? `実行中の返答があります（${data.active_runs}件）` : 'サーバーを再起動'}
+        <button onClick={restart} disabled={restarting || data.active_runs > 0 || (data.active_terminals ?? 0) > 0 || !data.can_restart} className={button}>
+          {restarting ? '再起動中…' : data.active_runs > 0 ? `実行中の返答があります（${data.active_runs}件）` : (data.active_terminals ?? 0) > 0 ? '接続中の端末があります' : 'サーバーを再起動'}
         </button>
       </Card>
     </div>

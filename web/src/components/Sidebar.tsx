@@ -63,6 +63,7 @@ type Props = {
   onRefresh: () => void
   refreshing: boolean
   serverUpdateNeeded: boolean
+  nativeActions: boolean
   onOpenSettings: (() => void) | null
   onError: (error: unknown) => void
   onSignOut: () => void
@@ -160,6 +161,7 @@ export default function Sidebar(props: Props) {
                   <Item
                     key={item.id}
                     item={item}
+                    nativeActions={props.nativeActions}
                     active={item.id === selected}
                     showProject={group.key === 'pinned'}
                     onSelect={() => props.onSelect(item.id)}
@@ -211,6 +213,7 @@ export default function Sidebar(props: Props) {
 }
 
 type ItemProps = {
+  nativeActions: boolean
   item: Conversation
   active: boolean
   draggable: boolean
@@ -225,7 +228,7 @@ type ItemProps = {
   onDeleted: () => void
 }
 
-function Item({ item, active, draggable, showProject, ...on }: ItemProps) {
+function Item({ item, active, draggable, showProject, nativeActions, ...on }: ItemProps) {
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [title, setTitle] = useState(item.title)
@@ -251,6 +254,7 @@ function Item({ item, active, draggable, showProject, ...on }: ItemProps) {
       {renaming ? (
         <input
           autoFocus
+          aria-label="会話の名前"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           onBlur={rename}
@@ -298,9 +302,13 @@ function Item({ item, active, draggable, showProject, ...on }: ItemProps) {
                 api.fork(item.id).then((copy) => on.onForked(copy.id)).catch(on.onError)
               }}
             />
+            {nativeActions && item.has_native_session && <MenuItem icon={Trash2} label="CLI側も削除" danger onClick={() => {
+              if (window.confirm(`「${item.title || '無題'}」と関連するCodex・Claude Codeの元セッションも削除します。Codexが生成した子セッションも対象です。元に戻せません。続けますか？`)) act(api.remove(item.id, true), on.onDeleted)
+              else setMenu(false)
+            }} />}
             <MenuItem
               icon={Trash2}
-              label="削除"
+              label="アプリ内のみ削除"
               danger
               onClick={() => {
                 if (window.confirm(`「${item.title || '無題'}」を削除しますか？元に戻せません`)) act(api.remove(item.id), on.onDeleted)

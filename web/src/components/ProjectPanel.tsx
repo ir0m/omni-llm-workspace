@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, File, Folder, Link, RefreshCw, X } from 'lucide-react'
+import { lazy, Suspense } from 'react'
+import WorktreePanel from './WorktreePanel'
+const TerminalPanel = lazy(() => import('./TerminalPanel'))
 import { api, type ChangeStage, type FileDiff, type FilePreview, type FileTree, type ProjectChanges } from '../api'
 
 const STAGES: { key: ChangeStage; label: string }[] = [
@@ -83,8 +86,8 @@ function Tree(props: TreeProps) {
   </>
 }
 
-export default function ProjectPanel({ project, revision, onClose }: { project: string; revision: number; onClose: () => void }) {
-  const [tab, setTab] = useState<'files' | 'diff'>('files')
+export default function ProjectPanel({ project, revision, capabilities, onChanged, onClose }: { project: string; revision: number; capabilities: string[]; onChanged: () => void; onClose: () => void }) {
+  const [tab, setTab] = useState<'files' | 'diff' | 'terminal' | 'worktrees'>('files')
   const [refresh, setRefresh] = useState(0)
   const version = revision + refresh
   const [filePath, setFilePath] = useState<string | null>(null)
@@ -98,7 +101,10 @@ export default function ProjectPanel({ project, revision, onClose }: { project: 
   const [mobile, setMobile] = useState(() => !window.matchMedia('(min-width: 1024px)').matches)
   const panel = useRef<HTMLElement>(null)
   const close = useRef<HTMLButtonElement>(null)
-  const selected = tab === 'files' ? filePath : change?.path
+  const tabs: ('files' | 'diff' | 'terminal' | 'worktrees')[] = ['files', 'diff']
+  if (capabilities.includes('terminal')) tabs.push('terminal')
+  if (capabilities.includes('worktrees')) tabs.push('worktrees')
+  const selected = tab === 'files' ? filePath : tab === 'diff' ? change?.path : null
 
   useEffect(() => {
     const query = window.matchMedia('(min-width: 1024px)')
@@ -147,7 +153,7 @@ export default function ProjectPanel({ project, revision, onClose }: { project: 
     onKeyDown={(event) => {
       if (event.key === 'Escape') { event.stopPropagation(); onClose() }
       if (mobile && event.key === 'Tab') {
-        const elements = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex="0"]') ?? [])
+        const elements = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]') ?? [])
           .filter((element) => element.getClientRects().length > 0)
         const first = elements[0], last = elements[elements.length - 1]
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
@@ -168,18 +174,19 @@ export default function ProjectPanel({ project, revision, onClose }: { project: 
       onKeyDown={(event) => {
         if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
           event.preventDefault()
-          const next = event.key === 'Home' ? 'files' : event.key === 'End' ? 'diff' : tab === 'files' ? 'diff' : 'files'
+          const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[tabs.length - 1] : tabs[(tabs.findIndex((t) => t === tab) + (event.key === 'ArrowLeft' ? tabs.length - 1 : 1)) % tabs.length]
           setTab(next)
           event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus()
         }
       }}>
-      {(['files', 'diff'] as const).map((value) => <button key={value} role="tab" data-tab={value}
+      {tabs.map((value) => <button key={value} role="tab" data-tab={value}
         id={`project-tab-${value}`} aria-controls="project-tab-content" aria-selected={tab === value} tabIndex={tab === value ? 0 : -1}
         onClick={() => setTab(value)} className={`flex-1 border-b-2 px-3 py-2 text-sm ${tab === value ? 'border-accent text-accent' : 'border-transparent text-muted'}`}>
-        {value === 'files' ? 'ファイル' : '差分'}
+        {value === 'files' ? 'ファイル' : value === 'diff' ? '差分' : value === 'terminal' ? '端末' : '並列作業'}
       </button>)}
     </div>
     <div id="project-tab-content" role="tabpanel" aria-labelledby={`project-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
+      {tab === 'terminal' ? <Suspense fallback={<p className="p-3">読み込み中…</p>}><TerminalPanel project={project} /></Suspense> : tab === 'worktrees' ? <WorktreePanel project={project} onChanged={onChanged} /> : <>
       <div className="max-h-[38%] min-h-24 shrink-0 overflow-y-auto border-b border-border py-1" aria-label={tab === 'files' ? 'ファイル一覧' : '変更ファイル一覧'}>
         {tab === 'files' ? <Tree project={project} path="" depth={0} version={version} selected={filePath} onSelect={setFilePath} /> : <>
           {listError && <p role="alert" className="p-3 text-sm text-danger">{listError}</p>}
@@ -225,6 +232,7 @@ export default function ProjectPanel({ project, revision, onClose }: { project: 
             </span>) : <span className="px-3 text-muted">差分はありません</span>}</code></pre>
         </>}
       </div>
+      </>}
     </div>
   </section>
 }

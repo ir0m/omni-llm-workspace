@@ -83,6 +83,7 @@ export type Target = { provider: string; model: string; effort?: string | null }
 export type Mode = 'chat' | 'code'
 
 export type Conversation = {
+  has_native_session?: boolean
   id: string
   title: string
   mode: Mode
@@ -158,9 +159,14 @@ export type ChangeStage = 'staged' | 'unstaged' | 'untracked'
 export type GitChange = { path: string; old_path: string | null; status: string }
 export type ProjectChanges = { is_git: boolean } & Record<ChangeStage, GitChange[]>
 export type FileDiff = { path: string; patch: string; truncated: boolean }
+export type Worktree = { name: string; source: string; title: string; branch: string; base: string; conversation_id: string; conversation: Conversation | null }
+export type WorktreeResult = { changes: ProjectChanges; paths: string[]; answer: string }
+export type ProjectBranches = { branches: { ref: string; name: string; remote: boolean }[]; current_ref: string | null; head: string | null }
 
 export type OutsideLimit = 'mode' | 'ask' | 'deny'
 export type PermissionValues = {
+  omni_allow_native_session_changes: boolean
+  omni_allow_terminal: boolean
   omni_approval_default: ApprovalMode
   omni_approval_max: ApprovalMode
   omni_outside_read: OutsideLimit
@@ -189,6 +195,7 @@ export type Accounts = {
   model_defaults: Record<string, { model: string; effort: string | null }>
 }
 export type ServerStatus = {
+  active_terminals?: number
   version: string
   python: string
   pid: number
@@ -267,6 +274,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  branches: (project: string) => request<ProjectBranches>('GET', `/api/projects/${encodeURIComponent(project)}/branches`),
+  worktrees: (project: string) => request<{ items: Worktree[]; can_create: boolean }>('GET', `/api/projects/${encodeURIComponent(project)}/worktrees`),
+  createWorktree: (project: string, title: string, base: string) => request<Worktree>('POST', `/api/projects/${encodeURIComponent(project)}/worktrees`, { title, base }),
+  worktreeResult: (project: string) => request<WorktreeResult>('GET', `/api/projects/${encodeURIComponent(project)}/worktree-result`),
+  worktreeDiff: (project: string, path: string) => request<FileDiff>('GET', `/api/projects/${encodeURIComponent(project)}/worktree-diff?${new URLSearchParams({ path })}`),
+  mergeWorktree: (project: string) => request<{ ok: boolean }>('POST', `/api/projects/${encodeURIComponent(project)}/worktree-merge`),
+  removeWorktree: (project: string) => request<{ ok: boolean }>('DELETE', `/api/projects/${encodeURIComponent(project)}/worktree`),
+  terminal: (project: string) => request<{ enabled: boolean }>('GET', `/api/projects/${encodeURIComponent(project)}/terminal`),
   me: () => request<Me>('GET', '/api/auth/me'),
   passkeyRegisterOptions: (token?: string) =>
     request<{ challenge_id: string; options: PublicKeyCredentialCreationOptionsJSON }>('POST', '/api/auth/passkey/register/options', { token: token ?? null }),
@@ -301,7 +316,7 @@ export const api = {
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
   update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode'>> & { project?: string; clear_allow_rules?: boolean }) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
-  remove: (id: string) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}`),
+  remove: (id: string, native = false) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}?native=${native}`),
   fork: (id: string, messageId?: string) =>
     request<Conversation>('POST', `/api/conversations/${id}/fork`, { message_id: messageId ?? null }),
   reorder: (ids: string[]) => request<{ ok: boolean }>('PUT', '/api/conversations/order', { ids }),

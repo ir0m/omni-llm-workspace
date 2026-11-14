@@ -217,7 +217,7 @@ async def server(request: Request):
             "started_at": int(state.started_at * 1000), "uptime_seconds": int(time.time() - state.started_at),
             "systemd": launched_by_systemd(), "can_restart": bool(getattr(state, "can_restart", False)),
             "restart_required": restart_required(state),
-            "active_runs": active_runs(request), "listen": f"{settings.omni_host}:{settings.omni_port}",
+            "active_runs": active_runs(request), "active_terminals": len(state.terminals), "listen": f"{settings.omni_host}:{settings.omni_port}",
             "public_urls": settings.public_origins(), "data_dir": str(settings.omni_data_dir), "data_bytes": size,
             "projects_dir": str(settings.omni_projects_dir), "projects": len(folders), "agents": agents}
 
@@ -228,6 +228,8 @@ async def restart(request: Request):
     if active_runs(request):
         raise failure(409, "runs_active", "返答の実行中は再起動できません。終わってから再起動してください")
     state = request.app.state
+    if state.terminals:
+        raise failure(409, "terminals_active", "接続中の端末を終了してから再起動してください")
     if not getattr(state, "can_restart", False):
         raise failure(400, "restart_unavailable", "この起動方法では再起動できません")
     state.restart_requested = True

@@ -24,6 +24,11 @@ def origin(agent: str, native_id: str) -> dict[str, str]:
     return {"agent": family(agent), "session": native_id}
 
 
+def same_origin(value: dict | None, agent: str, native_id: str) -> bool:
+    expected = origin(agent, native_id)
+    return bool(value) and all(value.get(key) == item for key, item in expected.items())
+
+
 class ExternalSessions:
     def __init__(self, state):
         self.state = state
