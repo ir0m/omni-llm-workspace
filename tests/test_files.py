@@ -192,3 +192,119 @@ def test_large_diff_is_bounded_for_browser_rendering(client, project):
     response = client.get("/api/projects/app/diff", params={"path": "delete.txt"})
     assert response.status_code == 200 and response.json()["truncated"]
     assert len(response.json()["patch"].splitlines()) <= 5000
+
+
+@pytest.fixture
+def editable(client, project):
+    client.app.state.settings.omni_allow_file_edit = True
+    return project
+
+
+def load(client, path):
+    return client.get("/api/projects/app/file", params={"path": path, "full": True}).json()
+
+
+def test_editing_is_off_by_default_and_cannot_be_enabled_beyond_env(client, project):
+    body = {"path": "new.md", "text": "x", "create": True}
+    assert client.put("/api/projects/app/file", json=body).status_code == 403
+    assert client.post("/api/projects/app/folder", json={"path": "docs"}).status_code == 403
+    assert client.post("/api/projects/app/move", json={"path": "delete.txt", "to": "kept.txt"}).status_code == 403
+    assert client.delete("/api/projects/app/file", params={"path": "delete.txt"}).status_code == 403
+    assert not (project / "new.md").exists() and (project / "delete.txt").exists()
+    assert client.put("/api/settings/permissions", json={"omni_allow_file_edit": True}).status_code == 400
+
+
+def test_full_read_returns_a_hash_and_truncated_previews_do_not(client, project):
+    (project / "large.txt").write_bytes(b"a" * (TEXT_LIMIT + 10))
+    assert client.get("/api/projects/app/file", params={"path": "large.txt"}).json()["hash"] is None
+    full = load(client, "large.txt")
+    assert not full["truncated"] and len(full["text"]) == TEXT_LIMIT + 10 and len(full["hash"]) == 64
+
+
+def test_save_replaces_only_the_content_the_editor_loaded(client, editable):
+    loaded = load(client, "src/main.py")
+    saved = client.put("/api/projects/app/file", json={"path": "src/main.py", "text": "print('日本語')\n",
+                                                       "base_hash": loaded["hash"]})
+    assert saved.status_code == 200
+    assert (editable / "src" / "main.py").read_text() == "print('日本語')\n"
+    assert saved.json()["hash"] == load(client, "src/main.py")["hash"]
+    # An agent changed the file after the editor loaded it: the stale save must not overwrite that work.
+    stale = client.put("/api/projects/app/file", json={"path": "src/main.py", "text": "lost", "base_hash": loaded["hash"]})
+    assert stale.status_code == 409
+    assert client.put("/api/projects/app/file", json={"path": "src/main.py", "text": "lost"}).status_code == 409
+    assert (editable / "src" / "main.py").read_text() == "print('日本語')\n"
+    assert client.put("/api/projects/app/file", json={"path": "gone.md", "text": "x", "base_hash": "0" * 64}).status_code == 404
+    assert [entry.name for entry in (editable / "src").iterdir()] == ["main.py"]  # no temporary file is left
+
+
+def test_save_keeps_the_file_mode(client, editable):
+    script = editable / "run.sh"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    body = {"path": "run.sh", "text": "#!/bin/sh\necho ok\n", "base_hash": load(client, "run.sh")["hash"]}
+    assert client.put("/api/projects/app/file", json=body).status_code == 200
+    assert script.stat().st_mode & 0o777 == 0o755
+
+
+def test_create_never_replaces_and_needs_an_existing_folder(client, editable):
+    assert client.put("/api/projects/app/file", json={"path": "notes/a.md", "text": "a", "create": True}).status_code == 404
+    assert client.post("/api/projects/app/folder", json={"path": "notes"}).status_code == 201
+    assert client.post("/api/projects/app/folder", json={"path": "notes"}).status_code == 409
+    assert client.put("/api/projects/app/file", json={"path": "notes/a.md", "text": "a", "create": True}).status_code == 200
+    assert client.put("/api/projects/app/file", json={"path": "notes/a.md", "text": "b", "create": True}).status_code == 409
+    assert client.put("/api/projects/app/file", json={"path": "notes", "text": "b", "create": True}).status_code == 409
+    assert (editable / "notes" / "a.md").read_text() == "a"
+    assert [entry.name for entry in (editable / "notes").iterdir()] == ["a.md"]
+
+
+@pytest.mark.parametrize("path", ["../outside.txt", ".env", ".env.local", ".git/config", ".git/hooks/pre-commit",
+                                      "private.pem", "data/x.txt", "/etc/passwd", ""])
+def test_private_paths_cannot_be_edited(client, editable, path):
+    status = (400,) if path in ("", "/etc/passwd") else (403,)
+    assert client.put("/api/projects/app/file", json={"path": path, "text": "x", "create": True}).status_code in status
+    assert client.post("/api/projects/app/folder", json={"path": path}).status_code in status
+    assert client.post("/api/projects/app/move", json={"path": "delete.txt", "to": path}).status_code in status
+    assert client.post("/api/projects/app/move", json={"path": path, "to": "moved.txt"}).status_code in status
+    assert client.delete("/api/projects/app/file", params={"path": path}).status_code in status
+    assert (editable / "delete.txt").exists() and (editable / ".git" / "config").exists()
+
+
+def test_edits_never_follow_links(client, editable, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside marker")
+    (editable / "escape.txt").symlink_to(outside)
+    (editable / "escape-dir").symlink_to(tmp_path, target_is_directory=True)
+    for body in ({"path": "escape.txt", "text": "x", "base_hash": "0" * 64}, {"path": "escape.txt", "text": "x", "create": True},
+                 {"path": "escape-dir/new.txt", "text": "x", "create": True}):
+        assert client.put("/api/projects/app/file", json=body).status_code in (403, 409)
+    assert client.post("/api/projects/app/folder", json={"path": "escape-dir/sub"}).status_code == 403
+    assert client.post("/api/projects/app/move", json={"path": "delete.txt", "to": "escape-dir/d.txt"}).status_code == 403
+    assert client.post("/api/projects/app/move", json={"path": "escape.txt", "to": "moved.txt"}).status_code == 403
+    assert outside.read_text() == "outside marker" and not (tmp_path / "new.txt").exists() and not (tmp_path / "sub").exists()
+    # Deleting a link removes the link, not what it points to.
+    assert client.delete("/api/projects/app/file", params={"path": "escape.txt"}).status_code == 200
+    assert outside.read_text() == "outside marker" and not (editable / "escape.txt").is_symlink()
+
+
+def test_move_and_delete(client, editable):
+    assert client.post("/api/projects/app/move", json={"path": "rename.txt", "to": "src/renamed.txt"}).status_code == 200
+    assert (editable / "src" / "renamed.txt").read_text() == "rename me\n" and not (editable / "rename.txt").exists()
+    assert client.post("/api/projects/app/move", json={"path": "delete.txt", "to": "src/renamed.txt"}).status_code == 409
+    assert client.post("/api/projects/app/move", json={"path": "src", "to": "src/inner"}).status_code == 400
+    assert client.post("/api/projects/app/move", json={"path": "missing", "to": "x"}).status_code == 404
+    assert client.post("/api/projects/app/move", json={"path": "src", "to": "lib"}).status_code == 200
+    assert (editable / "lib" / "main.py").exists()
+    assert client.delete("/api/projects/app/file", params={"path": "lib"}).status_code == 409
+    assert client.delete("/api/projects/app/file", params={"path": "delete.txt"}).status_code == 200
+    assert client.delete("/api/projects/app/file", params={"path": "delete.txt"}).status_code == 404
+    assert client.post("/api/projects/app/folder", json={"path": "empty"}).status_code == 201
+    assert client.delete("/api/projects/app/file", params={"path": "empty"}).status_code == 200
+
+
+def test_oversized_saves_are_refused(client, editable):
+    from omniws.files import EDIT_LIMIT
+    body = {"path": "big.txt", "text": "あ" * (EDIT_LIMIT // 3 + 1), "create": True}
+    assert client.put("/api/projects/app/file", json=body).status_code == 413
+    assert not (editable / "big.txt").exists()
+    client.post("/api/auth/logout")
+    assert client.put("/api/projects/app/file", json={"path": "a.txt", "text": "x", "create": True}).status_code == 401

@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     omni_allow_shell: bool = True
     # Human-operated terminal: explicitly grants the server user's shell, outside agent policy.
     omni_allow_terminal: bool = False
+    # Human-operated file editing from the screen (Docs): saves, new files, renames and deletions in a project
+    omni_allow_file_edit: bool = False
+    # Typst and LaTeX compilation of project documents on this machine (Docs)
+    omni_allow_compile: bool = True
     omni_allow_native_session_changes: bool = True
     # Network access from the agents' sandboxes (package installs, git pull)
     omni_allow_network: bool = True

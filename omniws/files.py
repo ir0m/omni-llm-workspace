@@ -1,11 +1,13 @@
-"""Read-only project browsing and Git diffs. Never follow links below a registered project."""
+"""Project browsing, Git diffs and human edits from the screen. Never follow links below a registered project."""
 
 from __future__ import annotations
 
 import codecs
 import difflib
 import errno
+import hashlib
 import os
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -16,7 +18,9 @@ from .config import Settings
 from .projects import ProjectError, is_project, project_path
 
 TEXT_LIMIT = 256 * 1024
+EDIT_LIMIT = 2 * 1024 * 1024  # the largest text file the editor loads and saves
 IMAGE_LIMIT = 8 * 1024 * 1024
+PDF_LIMIT = 64 * 1024 * 1024
 GIT_LIMIT = 2 * 1024 * 1024
 PATCH_LIMIT = 512 * 1024
 PATCH_LINES = 5000
@@ -41,6 +45,10 @@ def visible(parts: tuple[str, ...]) -> bool:
         if lower.endswith((".pem", ".key", ".p12", ".pfx", ".keystore")):
             return False
     return True
+
+
+def content_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def parts_of(path: str) -> tuple[str, ...]:
@@ -132,23 +140,136 @@ class ProjectFiles:
             return "image/webp"
         return None
 
-    def file(self, path: str) -> dict:
+    def file(self, path: str, limit: int = TEXT_LIMIT) -> dict:
         with self.opened(path) as (descriptor, info):
             with os.fdopen(os.dup(descriptor), "rb") as stream:
-                data = stream.read(TEXT_LIMIT + 1)
+                data = stream.read(limit + 1)
         image_type = self.image_type(data)
         base = {"path": path, "size": info.st_size}
         if image_type:
             return {**base, "kind": "image", "media_type": image_type, "too_large": info.st_size > IMAGE_LIMIT}
-        truncated = len(data) > TEXT_LIMIT
+        if data.startswith(b"%PDF-"):
+            return {**base, "kind": "pdf", "too_large": info.st_size > PDF_LIMIT}
+        truncated = len(data) > limit
         try:
             # Ignore an incomplete final UTF-8 character only when the preview is truncated.
-            text = codecs.getincrementaldecoder("utf-8")("strict").decode(data[:TEXT_LIMIT], final=not truncated)
+            text = codecs.getincrementaldecoder("utf-8")("strict").decode(data[:limit], final=not truncated)
         except UnicodeDecodeError:
             return {**base, "kind": "binary"}
         if b"\0" in data:
             return {**base, "kind": "binary"}
-        return {**base, "kind": "text", "text": text, "truncated": truncated}
+        # The hash identifies the whole content, so a truncated preview cannot be saved back over the file.
+        return {**base, "kind": "text", "text": text, "truncated": truncated,
+                "hash": None if truncated else content_hash(data)}
+
+    @contextmanager
+    def parent(self, path: str):
+        """The open folder that holds `path`, and the entry's name. Refuses the project root itself."""
+        parts = parts_of(path)
+        if not parts:
+            raise FileError(400, "ファイルまたはフォルダのパスを指定してください")
+        if len(parts[-1].encode()) > 255:
+            raise FileError(400, "名前が長すぎます")
+        if not self.allowed(parts):
+            raise FileError(403, "このパスは編集できません")
+        with self.opened("/".join(parts[:-1]), directory=True) as (descriptor, _):
+            yield descriptor, parts[-1]
+
+    @staticmethod
+    def entry(descriptor: int, name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+    def write(self, path: str, text: str, base_hash: str | None, create: bool) -> dict:
+        """Save a text file. An existing file is replaced only while it still has the content the editor loaded."""
+        data = text.encode("utf-8")
+        if len(data) > EDIT_LIMIT:
+            raise FileError(413, "2 MiBを超えるファイルは保存できません")
+        with self.parent(path) as (descriptor, name):
+            info = self.entry(descriptor, name)
+            if info is not None and not stat.S_ISREG(info.st_mode):
+                raise FileError(409 if stat.S_ISDIR(info.st_mode) else 403, "通常のファイルだけ保存できます")
+            if create and info is not None:
+                raise FileError(409, "同じ名前のファイルが既にあります")
+            if not create:
+                if info is None:
+                    raise FileError(404, "ファイルが見つかりません。削除または改名された可能性があります")
+                if info.st_size > EDIT_LIMIT:
+                    raise FileError(409, "ファイルが変更されています。読み込み直してください")
+                current = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                with os.fdopen(current, "rb") as stream:
+                    if content_hash(stream.read(EDIT_LIMIT + 1)) != base_hash:
+                        raise FileError(409, "ファイルが変更されています。読み込み直してください")
+            # Write beside the target and rename over it, so a failed save never leaves half a file.
+            temporary = f".{name[:200]}.{secrets.token_hex(6)}.tmp"
+            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666, dir_fd=descriptor)
+            try:
+                with os.fdopen(handle, "wb") as stream:
+                    if info is not None:
+                        os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))  # new files follow the umask
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if create:
+                    # A hard link fails when the name was taken meanwhile; a rename would silently replace it.
+                    os.link(temporary, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+                else:
+                    os.replace(temporary, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+                    temporary = None
+            except FileExistsError as exc:
+                raise FileError(409, "同じ名前のファイルが既にあります") from exc
+            finally:
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary, dir_fd=descriptor)
+                    except OSError:
+                        pass
+        return {"path": path, "size": len(data), "hash": content_hash(data)}
+
+    def make_folder(self, path: str) -> dict:
+        with self.parent(path) as (descriptor, name):
+            try:
+                os.mkdir(name, 0o755, dir_fd=descriptor)
+            except FileExistsError as exc:
+                raise FileError(409, "同じ名前のファイルまたはフォルダが既にあります") from exc
+        return {"path": path}
+
+    def move(self, path: str, to: str) -> dict:
+        """Rename or move a file or folder inside the project. Never replaces an existing entry."""
+        target_parts = parts_of(to)
+        if target_parts[:len(parts_of(path))] == parts_of(path):
+            raise FileError(400, "フォルダを自身の中へは移動できません")
+        with self.parent(path) as (source, name), self.parent(to) as (target, new_name):
+            info = self.entry(source, name)
+            if info is None:
+                raise FileError(404, "ファイルが見つかりません")
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise FileError(403, "リンク・特殊ファイルは移動できません")
+            if self.entry(target, new_name) is not None:
+                raise FileError(409, "同じ名前のファイルまたはフォルダが既にあります")
+            os.rename(name, new_name, src_dir_fd=source, dst_dir_fd=target)
+        return {"path": to}
+
+    def delete(self, path: str) -> dict:
+        """Delete one file or one empty folder. Folders with content are left to the terminal or an agent."""
+        with self.parent(path) as (descriptor, name):
+            info = self.entry(descriptor, name)
+            if info is None:
+                raise FileError(404, "ファイルが見つかりません")
+            if stat.S_ISDIR(info.st_mode):
+                try:
+                    os.rmdir(name, dir_fd=descriptor)
+                except OSError as exc:
+                    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                        raise FileError(409, "空でないフォルダは削除できません") from exc
+                    raise
+            elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                os.unlink(name, dir_fd=descriptor)  # removing a link removes the link itself, never its target
+            else:
+                raise FileError(403, "特殊ファイルは削除できません")
+        return {"path": path}
 
     def image(self, path: str) -> tuple[bytes, str]:
         with self.opened(path) as (descriptor, info):
@@ -162,6 +283,18 @@ class ProjectFiles:
         if not media_type:
             raise FileError(415, "この画像形式は表示できません")
         return data, media_type
+
+    def pdf(self, path: str) -> bytes:
+        with self.opened(path) as (descriptor, info):
+            if info.st_size > PDF_LIMIT:
+                raise FileError(413, "PDFは64 MiBまで表示できます")
+            with os.fdopen(os.dup(descriptor), "rb") as stream:
+                data = stream.read(PDF_LIMIT + 1)
+        if len(data) > PDF_LIMIT:
+            raise FileError(413, "PDFは64 MiBまで表示できます")
+        if not data.startswith(b"%PDF-"):
+            raise FileError(415, "PDFではありません")
+        return data
 
     def git(self, *args: str) -> bytes:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",

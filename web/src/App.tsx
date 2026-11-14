@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api, type Me } from './api'
 import Login, { Enroll } from './components/Login'
 import Workspace from './components/Workspace'
+import { audienceSpec } from './components/presentLink'
+
+const Audience = lazy(() => import('./components/Presenter').then((module) => ({ default: module.Audience })))
 
 function enrollToken(): string | null {
   const match = window.location.hash.match(/^#\/enroll\/([\w-]+)$/)
@@ -34,6 +37,9 @@ export default function App() {
   if (!me) return <Centered>読み込み中…</Centered>
   if (token && !me.signed_in) return <Enroll token={token} me={me} onDone={() => { setToken(null); check() }} />
   if (!me.signed_in) return <Login me={me} onSignedIn={check} />
+  // The projector's window shows only the slides
+  const audience = audienceSpec()
+  if (audience) return <Suspense fallback={null}><Audience spec={audience} /></Suspense>
   return <Workspace onSignedOut={() => { window.location.hash = ''; check() }} />
 }
 

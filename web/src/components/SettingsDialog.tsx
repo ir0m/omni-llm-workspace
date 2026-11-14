@@ -275,6 +275,9 @@ const SWITCH: [boolean, string][] = [[false, '無効'], [true, '有効']]
 const GROUPS: { title: string; note?: string; fields: { field: Field; label: string; help?: string; options: [string | boolean, string][] }[] }[] = [
   { title: '手動の端末', note: 'サーバーユーザーのシェルを直接操作します。エージェント用の承認・コマンド拒否・ディレクトリ・ネットワーク制限とは独立した許可です。',
     fields: [{ field: 'omni_allow_terminal', label: '対話型端末', help: '.env で許可した場合だけ有効にできます。無効にすると接続中の端末も終了します。', options: SWITCH }] },
+  { title: 'Docs', note: '画面からプロジェクトのファイルを保存・作成・改名・削除します。秘密情報、.git の中、リンクの先は編集できません。',
+    fields: [{ field: 'omni_allow_file_edit', label: 'ファイルの編集', help: '.env で許可した場合だけ有効にできます。', options: SWITCH },
+      { field: 'omni_allow_compile', label: 'Typst・LaTeX のコンパイル', help: 'サーバーの typst・tectonic で PDF を作ります。', options: SWITCH }] },
   {
     title: 'Code の操作',
     fields: [

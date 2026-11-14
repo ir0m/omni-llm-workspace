@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useBackClose } from '../backClose'
 import { ChevronDown, Download, Folder, FolderOpen, FolderPlus, X } from 'lucide-react'
-import { api, ApiError, type ProjectList } from '../api'
+import { api, ApiError, type ProjectList, type TemplateInfo } from '../api'
 
 function GitState({ git }: { git: ProjectList['projects'][number]['git'] }) {
   if (!git) return <span className="text-muted">gitなし</span>
@@ -126,6 +126,12 @@ function ProjectDialog({ kind, root, maxDepth, onClose, onDone }: {
   const [gitInit, setGitInit] = useState(true)
   const [readme, setReadme] = useState(false)
   const [gitignore, setGitignore] = useState(false)
+  const [template, setTemplate] = useState('')
+  const [templates, setTemplates] = useState<TemplateInfo[]>([])
+  useEffect(() => {
+    // Older servers have no templates: the choice is simply not offered
+    if (kind === 'create') api.templates().then((data) => setTemplates(data.templates)).catch(() => {})
+  }, [kind])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -135,7 +141,7 @@ function ProjectDialog({ kind, root, maxDepth, onClose, onDone }: {
     setError(null)
     try {
       const result = kind === 'create'
-        ? await api.createProject({ name, git_init: gitInit, readme, gitignore })
+        ? await api.createProject({ name, git_init: gitInit, readme, gitignore, template: template || null })
         : await api.cloneProject({ url, name: name.trim() || undefined })
       onDone(result.name)
     } catch (caught) {
@@ -166,6 +172,16 @@ function ProjectDialog({ kind, root, maxDepth, onClose, onDone }: {
             placeholder={kind === 'create' ? '例: 仕事/顧客A/app' : '例: 仕事/顧客A/site'} />
         </label>
         <p className="mt-1 text-xs text-muted">/ で区切ると、フォルダの中に作ります（{maxDepth}階層まで）。途中のフォルダはグループになり、Code では選べません。</p>
+        {kind === 'create' && templates.length > 0 && (
+          <label className="mt-3 block text-sm">
+            テンプレート
+            <select value={template} onChange={(event) => setTemplate(event.target.value)} className={field}>
+              <option value="">使わない（空のフォルダ）</option>
+              {templates.map((item) => <option key={item.name} value={item.name}>{item.label}{item.source === 'user' ? '（自分用）' : ''}</option>)}
+            </select>
+            {template && <span className="mt-1 block text-xs text-muted">{templates.find((item) => item.name === template)?.description}</span>}
+          </label>
+        )}
         {kind === 'create' && (
           <div className="mt-3 space-y-1.5 text-sm">
             <label className="flex items-center gap-2"><input type="checkbox" checked={gitInit} onChange={(event) => setGitInit(event.target.checked)} /> git init する</label>

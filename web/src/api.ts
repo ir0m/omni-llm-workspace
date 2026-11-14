@@ -58,6 +58,9 @@ export type AppConfig = {
   allow_opencode_free: boolean
   allow_claude_subscription: boolean
   allow_mcp?: boolean
+  allow_file_edit?: boolean
+  allow_compile?: boolean
+  compilers?: { typst: boolean; tex: boolean }
 }
 
 export type ErrorInfo = { code: string; message: string }
@@ -168,10 +171,20 @@ export function projectPath(name: string): string {
 export type FileEntry = { name: string; path: string; kind: 'directory' | 'file' | 'link' | 'other'; size: number }
 export type FileTree = { path: string; entries: FileEntry[]; next_offset: number | null }
 export type FilePreview = { path: string; size: number } & (
-  | { kind: 'text'; text: string; truncated: boolean }
+  | { kind: 'text'; text: string; truncated: boolean; hash?: string | null }
   | { kind: 'image'; media_type: string; too_large: boolean }
+  | { kind: 'pdf'; too_large: boolean }
   | { kind: 'binary' }
 )
+export type SavedFile = { path: string; size: number; hash: string }
+export type TemplateInfo = { name: string; source: 'builtin' | 'user'; label: string; description: string; project: string | null; files: string[]; skipped: string[] }
+export type TemplatePlan = { template: TemplateInfo; project: string
+  files: { path: string; status: 'new' | 'changed' | 'same' | 'blocked'; hash: string | null; diff: string | null }[] }
+export type Diagnostic = { path: string | null; line: number | null; severity: 'error' | 'warning'; message: string }
+export type CompileResult = { ok: boolean; engine: string; seconds: number; log: string; diagnostics: Diagnostic[]; has_pdf: boolean }
+export type NoteSummary = { path: string; title: string; aliases: string[]; tags: string[]; headings: string[] }
+export type NoteIndex = { notes: NoteSummary[]; paths: string[]; backlinks: { path: string; title: string }[]
+  results: { path: string; title: string; line: number; snippet: string }[]; truncated: boolean }
 export type ChangeStage = 'staged' | 'unstaged' | 'untracked'
 export type GitChange = { path: string; old_path: string | null; status: string }
 export type ProjectChanges = { is_git: boolean } & Record<ChangeStage, GitChange[]>
@@ -184,6 +197,8 @@ export type OutsideLimit = 'mode' | 'ask' | 'deny'
 export type PermissionValues = {
   omni_allow_native_session_changes: boolean
   omni_allow_terminal: boolean
+  omni_allow_file_edit: boolean
+  omni_allow_compile: boolean
   omni_approval_default: ApprovalMode
   omni_approval_max: ApprovalMode
   omni_outside_read: OutsideLimit
@@ -394,12 +409,33 @@ export const api = {
     `/api/projects/${projectPath(project)}/files?${new URLSearchParams({ path, offset: String(offset) })}`),
   file: (project: string, path: string) => request<FilePreview>('GET',
     `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path })}`),
+  /** The whole file (up to the editor's limit) with the hash a save must send back */
+  fileFull: (project: string, path: string) => request<FilePreview>('GET',
+    `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path, full: 'true' })}`),
+  saveFile: (project: string, path: string, text: string, baseHash: string | null, create = false) => request<SavedFile>('PUT',
+    `/api/projects/${projectPath(project)}/file`, { path, text, base_hash: baseHash, create }),
+  deleteFile: (project: string, path: string) => request<{ path: string }>('DELETE',
+    `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path })}`),
+  makeFolder: (project: string, path: string) => request<{ path: string }>('POST', `/api/projects/${projectPath(project)}/folder`, { path }),
+  moveFile: (project: string, path: string, to: string) => request<{ path: string }>('POST', `/api/projects/${projectPath(project)}/move`, { path, to }),
   imageUrl: (project: string, path: string, version: number) =>
     `/api/projects/${projectPath(project)}/image?${new URLSearchParams({ path, v: String(version) })}`,
   changes: (project: string) => request<ProjectChanges>('GET', `/api/projects/${projectPath(project)}/changes`),
   diff: (project: string, path: string, stage: ChangeStage) => request<FileDiff>('GET',
     `/api/projects/${projectPath(project)}/diff?${new URLSearchParams({ path, stage })}`),
-  createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean }) =>
+  compile: (project: string, path: string) => request<CompileResult>('POST', `/api/projects/${projectPath(project)}/compile`, { path }),
+  /** A PDF of the project, or the last build of a .typ / .tex document */
+  pdfUrl: (project: string, path: string, version: number) =>
+    `/api/projects/${projectPath(project)}/pdf?${new URLSearchParams({ path, v: String(version) })}`,
+  notes: (project: string, path: string, q: string) => request<NoteIndex>('GET',
+    `/api/projects/${projectPath(project)}/notes?${new URLSearchParams({ path, q })}`),
+  templates: () => request<{ group: string; templates: TemplateInfo[] }>('GET', '/api/templates'),
+  createTemplate: (name: string, source: string | null) => request<TemplateInfo>('POST', '/api/templates', { name, source }),
+  templatePlan: (name: string, project: string) => request<TemplatePlan>('GET',
+    `/api/templates/${encodeURIComponent(name)}/plan?${new URLSearchParams({ project })}`),
+  applyTemplate: (name: string, project: string, files: { path: string; base_hash: string | null }[]) =>
+    request<{ files: { path: string; ok: boolean; message: string | null }[] }>('POST', `/api/templates/${encodeURIComponent(name)}/apply`, { project, files }),
+  createProject: (body: { name: string; git_init: boolean; readme: boolean; gitignore: boolean; template?: string | null }) =>
     request<{ name: string }>('POST', '/api/projects', body),
   cloneProject: (body: { url: string; name?: string }) => request<{ name: string }>('POST', '/api/projects/clone', body),
 }

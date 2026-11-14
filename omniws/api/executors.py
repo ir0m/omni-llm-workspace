@@ -10,6 +10,8 @@ from ..agents.opencode import FREE, PROVIDER_IDS
 from ..providers.base import ProviderError
 
 FREE_CACHE_SECONDS = 600
+from .. import compile
+
 router = APIRouter()
 
 
@@ -119,8 +121,10 @@ def config(request: Request):
     state = request.app.state
     settings = state.settings
     return {"approval_default": settings.omni_approval_default, "approval_max": settings.omni_approval_max,
-            "capabilities": ["native_sessions", "project_files", "settings", "run_input", "terminal", "worktrees", "native_session_actions", "agy", "mcp", "context"], "restart_required": restart_required(state),
+            "capabilities": ["native_sessions", "project_files", "settings", "run_input", "terminal", "worktrees", "native_session_actions", "agy", "mcp", "context", "file_edit", "templates", "compile"], "restart_required": restart_required(state),
             "allow_shell": settings.omni_allow_shell, "allow_network": settings.omni_allow_network, "shell_deny": settings.shell_deny(),
             "allow_opencode_free": settings.omni_allow_opencode_free,
             "allow_claude_subscription": settings.omni_allow_claude_subscription,
-            "allow_mcp": settings.omni_allow_mcp}
+            "allow_mcp": settings.omni_allow_mcp,
+            "allow_file_edit": settings.omni_allow_file_edit,
+            "allow_compile": settings.omni_allow_compile, "compilers": compile.available()}

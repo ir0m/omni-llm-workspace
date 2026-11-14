@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type AppConfig, type Conversation, type Draft, type Executor, type ProjectList } from '../api'
 import ChatView from './ChatView'
+const DocsView = lazy(() => import('./DocsView'))
 import { useBackClose } from '../backClose'
 import SettingsDialog from './SettingsDialog'
 import Sidebar from './Sidebar'
@@ -9,6 +10,8 @@ function idFromHash(): string | null {
   const match = window.location.hash.match(/^#\/c\/([\w-]+)$/)
   return match ? match[1] : null
 }
+
+const docsFromHash = () => window.location.hash === '#/docs'
 
 const BLANK: Draft = { temporary: false, mode: 'chat', project: null }
 
@@ -44,6 +47,10 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [error, setError] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [docs, setDocs] = useState(docsFromHash)
+  // Once opened, Docs stays mounted behind the conversation so unsaved edits survive switching back and forth
+  const [docsOpened, setDocsOpened] = useState(docsFromHash)
+  useEffect(() => { if (docs) setDocsOpened(true) }, [docs])
   useBackClose(drawerOpen, () => setDrawerOpen(false))
   useBackClose(settingsOpen, () => setSettingsOpen(false))
   const discoveringRef = useRef(false)
@@ -131,6 +138,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
       const id = idFromHash()
       if (id) setDraft((current) => (current.temporary ? { ...current, temporary: false } : current))
       setSelected(id)
+      setDocs(docsFromHash())
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -141,6 +149,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
     // A temporary draft applies to the one conversation made from it, never to the next new one
     if (id) setDraft((current) => (current.temporary ? { ...current, temporary: false } : current))
     setSelected(id)
+    setDocs(false)
     setDrawerOpen(false)
   }, [])
 
@@ -174,11 +183,17 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         refreshing={discovering}
         serverUpdateNeeded={!!config && (!config.capabilities || !!config.restart_required)}
         onError={handle}
+        onOpenDocs={config?.capabilities?.includes('file_edit') ? () => { window.location.hash = '#/docs'; setDocs(true); setDrawerOpen(false) } : null}
+        docsActive={docs}
         onOpenSettings={config?.capabilities?.includes('settings') ? () => { setSettingsOpen(true); setDrawerOpen(false) } : null}
         onSignOut={() => api.logout().finally(onSignedOut)}
       />
       {settingsOpen && <SettingsDialog executors={executors} onClose={() => setSettingsOpen(false)} onChanged={settingsChanged}
         onDiscover={() => discover(true)} onDeletedAll={() => { select(null); refresh() }} />}
+      {docsOpened && <div className={docs ? 'flex min-w-0 flex-1' : 'hidden'}>
+        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} templates={!!config?.capabilities?.includes('templates')} onProjectsChanged={loadProjects} onOpenMenu={() => setDrawerOpen(true)} onError={handle} /></Suspense>
+      </div>}
+      <div className={docs ? 'hidden' : 'flex min-w-0 flex-1'}>
       <ChatView
         key={selected ?? `new-${draft.mode}-${draft.project}-${draft.temporary}`}
         conversationId={selected}
@@ -195,6 +210,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         onRunFinished={() => loadExecutors(false)}
         onError={handle}
       />
+      </div>
     </div>
   )
 }

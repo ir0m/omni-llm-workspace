@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FileText, Folder, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
   Pin, PinOff, Plus, RefreshCw, Search, Settings, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
@@ -96,6 +96,8 @@ type Props = {
   serverUpdateNeeded: boolean
   nativeActions: boolean
   onOpenSettings: (() => void) | null
+  onOpenDocs: (() => void) | null
+  docsActive: boolean
   onError: (error: unknown) => void
   onSignOut: () => void
 }
@@ -231,6 +233,12 @@ export default function Sidebar(props: Props) {
             <X className="size-4" aria-hidden />
           </button>
         </div>
+        {props.onOpenDocs && <div className="px-3 pb-2">
+          <button onClick={props.onOpenDocs} aria-current={props.docsActive ? 'page' : undefined}
+            className={`flex w-full items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm ${props.docsActive ? 'bg-raised text-fg' : 'text-muted hover:text-fg'}`}>
+            <FileText className="size-4" aria-hidden /> Docs（文書の編集）
+          </button>
+        </div>}
         <div className="flex items-center gap-2 px-3 pb-2">
           <label className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1.5">
             <Search className="size-4 text-muted" aria-hidden />

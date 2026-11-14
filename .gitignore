@@ -14,3 +14,6 @@ web/dist/
 AGENTS.md
 CLAUDE.md
 docs/
+# ...except inside the bundled templates
+!templates/**/AGENTS.md
+!templates/**/docs/

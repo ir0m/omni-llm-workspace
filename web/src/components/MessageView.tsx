@@ -63,7 +63,7 @@ function CopyButton({ text, label = 'コピー' }: { text: string; label?: strin
   )
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, image }: { text: string; image?: (src: string) => string | null }) {
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -71,6 +71,11 @@ export function Markdown({ text }: { text: string }) {
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+          // Documents refer to images beside them; the caller maps those paths to URLs the server can serve.
+          ...(image ? { img: ({ node: _node, src, ...props }) => {
+            const url = typeof src === 'string' ? image(src) : null
+            return url ? <img {...props} src={url} loading="lazy" /> : <span className="text-muted">［画像: {props.alt || String(src ?? '')}］</span>
+          } } : {}),
           pre: ({ node, children, ...props }) => {
             const code = node?.children?.[0]
             const raw = code && 'children' in code ? code.children.map((child) => ('value' in child ? child.value : '')).join('') : ''

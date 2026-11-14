@@ -15,7 +15,7 @@ const sizeLabel = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024
 
 type TreeProps = { project: string; path: string; depth: number; version: number; selected: string | null; onSelect: (path: string) => void }
 
-function Tree(props: TreeProps) {
+export function Tree(props: TreeProps) {
   const { project, path, version, depth, selected, onSelect } = props
   const [tree, setTree] = useState<FileTree | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -221,6 +221,7 @@ export default function ProjectPanel({ project, revision, capabilities, onChange
           : <img key={`${preview.path}-${version}`} src={api.imageUrl(project, preview.path, version)} alt={preview.path}
               onError={() => setError('画像を読み込めませんでした。更新して再度お試しください')}
               className="mx-auto max-w-full p-3" />)}
+        {preview?.kind === 'pdf' && <p className="p-4 text-sm text-muted">PDFはDocsで表示できます</p>}
         {preview?.kind === 'binary' && <p className="p-4 text-sm text-muted">この形式はプレビューできません</p>}
         {diff && <>
           {diff.truncated && <p className="p-3 text-xs text-muted">差分が大きいため先頭部分を表示しています</p>}

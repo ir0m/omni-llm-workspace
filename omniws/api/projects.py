@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from .. import projects
+from .. import compile as compiler
+from .. import notes, projects, templates
 from ..config import Settings
-from ..files import FileError, ProjectFiles
+from ..files import EDIT_LIMIT, FileError, ProjectFiles
 
 router = APIRouter(prefix="/api/projects")
 
@@ -19,6 +20,8 @@ class NewProject(BaseModel):
     git_init: bool = True
     readme: bool = False
     gitignore: bool = False
+    # Fill the new folder from this template
+    template: str | None = Field(default=None, max_length=100)
 
 
 class Clone(BaseModel):
@@ -51,10 +54,16 @@ async def create_project(body: NewProject, request: Request):
     if not config.omni_allow_project_create:
         raise HTTPException(status_code=403, detail={"code": "not_allowed", "message": "OMNI_ALLOW_PROJECT_CREATE"})
     try:
+        if body.template:  # an unknown template must not leave an empty folder behind
+            await run_in_threadpool(templates.load, config, body.template)
         path = await run_in_threadpool(projects.create_project, config.omni_projects_dir, body.name, body.git_init,
                                        body.readme, body.gitignore)
+        if body.template:
+            await run_in_threadpool(templates.fill_new_project, config, body.template, projects.check_name(body.name))
     except projects.ProjectError as exc:
         raise failure(exc) from exc
+    except (templates.TemplateError, FileError) as exc:
+        raise HTTPException(status_code=exc.status, detail={"code": "template", "message": exc.message}) from exc
     return {"name": projects.check_name(body.name)}
 
 
@@ -68,6 +77,27 @@ async def clone_project(body: Clone, request: Request):
     except projects.ProjectError as exc:
         raise failure(exc) from exc
     return {"name": path.relative_to(config.omni_projects_dir).as_posix()}
+
+
+class SaveFile(BaseModel):
+    path: str = Field(max_length=4096)
+    text: str = Field(max_length=EDIT_LIMIT)
+    # The hash the editor received when it loaded the file; None only when creating
+    base_hash: str | None = Field(default=None, max_length=64)
+    create: bool = False
+
+
+class CompileRequest(BaseModel):
+    path: str = Field(max_length=4096)
+
+
+class NewFolder(BaseModel):
+    path: str = Field(max_length=4096)
+
+
+class MoveFile(BaseModel):
+    path: str = Field(max_length=4096)
+    to: str = Field(max_length=4096)
 
 
 async def browse(request: Request, name: str, method: str, *args):
@@ -86,8 +116,35 @@ async def list_files(name: str, request: Request, path: str = Query(default="", 
 
 
 @router.get("/{name:path}/file")
-async def read_file(name: str, request: Request, path: str = Query(max_length=4096)):
-    return await browse(request, name, "file", path)
+async def read_file(name: str, request: Request, path: str = Query(max_length=4096), full: bool = False):
+    """`full` loads up to the editor's limit, so the whole file can be edited and saved back."""
+    return await browse(request, name, "file", path, *([EDIT_LIMIT] if full else []))
+
+
+async def edit(request: Request, name: str, method: str, *args):
+    if not settings(request).omni_allow_file_edit:
+        raise HTTPException(status_code=403, detail="ファイルの編集は無効です。OMNI_ALLOW_FILE_EDIT=true の設定が必要です")
+    return await browse(request, name, method, *args)
+
+
+@router.put("/{name:path}/file")
+async def save_file(name: str, body: SaveFile, request: Request):
+    return await edit(request, name, "write", body.path, body.text, body.base_hash, body.create)
+
+
+@router.delete("/{name:path}/file")
+async def delete_file(name: str, request: Request, path: str = Query(max_length=4096)):
+    return await edit(request, name, "delete", path)
+
+
+@router.post("/{name:path}/folder", status_code=201)
+async def make_folder(name: str, body: NewFolder, request: Request):
+    return await edit(request, name, "make_folder", body.path)
+
+
+@router.post("/{name:path}/move")
+async def move_file(name: str, body: MoveFile, request: Request):
+    return await edit(request, name, "move", body.path, body.to)
 
 
 @router.get("/{name:path}/image")
@@ -95,6 +152,33 @@ async def read_image(name: str, request: Request, path: str = Query(max_length=4
     data, media_type = await browse(request, name, "image", path)
     return Response(data, media_type=media_type, headers={"Cache-Control": "no-store",
                     "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+
+PDF_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": "default-src 'none'; sandbox"}
+
+
+async def compiling(function, request: Request, name: str, path: str):
+    def run():
+        try:
+            return function(settings(request), name, path)
+        except compiler.CompileError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    return await run_in_threadpool(run)
+
+
+@router.post("/{name:path}/compile")
+async def compile_document(name: str, body: CompileRequest, request: Request):
+    return await compiling(compiler.compile_document, request, name, body.path)
+
+
+@router.get("/{name:path}/pdf")
+async def read_pdf(name: str, request: Request, path: str = Query(max_length=4096)):
+    """A PDF file of the project, or the last successful build of a .typ / .tex document."""
+    if path.lower().endswith(".pdf"):
+        return Response(await browse(request, name, "pdf", path), media_type="application/pdf", headers=PDF_HEADERS)
+    return FileResponse(await compiling(compiler.built_pdf, request, name, path), media_type="application/pdf",
+                        headers=PDF_HEADERS)
 
 
 @router.get("/{name:path}/changes")
@@ -106,3 +190,14 @@ async def list_changes(name: str, request: Request):
 async def read_diff(name: str, request: Request, path: str = Query(max_length=4096),
                     stage: Literal["staged", "unstaged", "untracked"] = "unstaged"):
     return await browse(request, name, "diff", path, stage)
+
+
+@router.get("/{name:path}/notes")
+async def note_index(name: str, request: Request, q: str = Query(default="", max_length=300),
+                     path: str = Query(default="", max_length=4096)):
+    def run():
+        try:
+            return notes.index(settings(request), name, q, path)
+        except FileError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    return await run_in_threadpool(run)
