@@ -10,6 +10,8 @@
 
 利用者が1人のセルフホストを前提にしています。
 
+![Chat: グラフの画像とメモを添付して質問し、表とコードで答えを受け取る画面](assets/screenshots/chat.png)
+
 ## できること
 
 - **実行元の切り替え**: Anthropic・OpenAI・Gemini・OpenRouter のAPI、Ollama などのローカルLLM、Codex（ChatGPTのサブスクリプション）、Claude Code（サブスクリプションまたはAPI）、Antigravity CLI（agy）。
@@ -21,6 +23,34 @@
 - **使用率**: サブスクリプションの使用率と、会話の文脈の使用量を表示します。
 - **ファイルの添付**: 画像・PDF・テキストのファイルを会話に添付できます。Code ではどんな形式でもエージェントに渡せます。
 - **MCP ツール**: Chat（API・ローカルのモデル）で MCP サーバーのツールを使えます。ツールを使うたびに確認します。
+
+## 画面
+
+画面の例です。デモ用のデータとモデルで撮影しています。
+
+**Code**: エージェントの作業（作業計画・読んだファイル・編集・コマンド）を会話の中に表示し、右のパネルでプロジェクトの差分を確認できます。
+
+![Code: エージェントが関数とテストを追加し、右のパネルにGitの差分を表示した画面](assets/screenshots/code.png)
+
+**右サイドバー**: Code のフォルダボタンで開きます。ファイル・差分のほか、端末と並列作業（git worktree）のタブがあります。
+
+<img src="assets/screenshots/sidebar.png" alt="右サイドバー: プロジェクトのファイル一覧と、選んだファイルの内容を表示した画面" width="432">
+
+**Docs**: Typst・LaTeX はサーバーでコンパイルし、横に PDF を表示します。
+
+![Docs: Typstの文書を編集し、横にコンパイルしたPDFを表示した画面](assets/screenshots/docs-typst.png)
+
+**Docs**: Markdown のノートは、wikilink・callout・数式・Mermaid の図を含めてプレビューします。
+
+![Docs: Obsidian形式のノートを編集し、calloutや数式、図をプレビューした画面](assets/screenshots/docs-notes.png)
+
+**設定**: サイドバー下の歯車から開きます。権限は `.env` の値を上限として、画面でより厳しくできます。
+
+![設定: 端末・Docs・Codeの操作などの権限を切り替える画面](assets/screenshots/settings.png)
+
+**スマホ**: 同じ画面をスマホのブラウザでも使えます。
+
+<img src="assets/screenshots/mobile.png" alt="スマホ: 添付した画像とメモ、質問と返答を表示したチャット画面" width="320">
 
 ## 必要なもの
 

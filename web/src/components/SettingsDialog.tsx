@@ -348,7 +348,7 @@ function PermissionsPane({ onChanged }: { onChanged: () => void }) {
                 <li key={field} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
                   <div className="min-w-0 flex-1 basis-48">
                     <p>{name}{changed && <span className="ml-2 text-xs text-accent">変更済み</span>}</p>
-                    <p className="text-xs text-muted">{help ? `${help}。` : ''}上限: {label(options, limit)}</p>
+                    <p className="text-xs text-muted">{help ? `${help.replace(/。$/, '')}。` : ''}上限: {label(options, limit)}</p>
                   </div>
                   <select value={String(value)} aria-label={name} className={select}
                     onChange={(event) => {
