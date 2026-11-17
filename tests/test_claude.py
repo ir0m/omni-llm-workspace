@@ -59,7 +59,11 @@ def test_tool_fields(tmp_path):
 def test_options_for_chat_and_code(tmp_path):
     claude = agent(tmp_path, omni_allow_claude_subscription=True)
     chat = claude.turn_options(turn(tmp_path, mode="chat"), None)
-    assert chat.tools == [] and chat.can_use_tool is None and chat.setting_sources == [] and chat.strict_mcp_config
+    # Only web search, which runs on Anthropic's side and needs no approval; nothing runs on this machine
+    assert chat.tools == ["WebSearch"] and chat.allowed_tools == ["WebSearch"]
+    assert chat.can_use_tool is None and chat.setting_sources == [] and chat.strict_mcp_config
+    off = agent(tmp_path, omni_allow_claude_subscription=True, omni_chat_web_search=False)
+    assert off.turn_options(turn(tmp_path, mode="chat"), None).tools == []
     (tmp_path / "CLAUDE.md").write_text("日本語で答える")
     code = claude.turn_options(turn(tmp_path, temporary=True), None)
     assert code.system_prompt["preset"] == "claude_code" and "日本語で答える" in code.system_prompt["append"]

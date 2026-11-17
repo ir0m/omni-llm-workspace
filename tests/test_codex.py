@@ -91,7 +91,7 @@ def test_chat_turn_runs_read_only_without_tools(codex_client):
     chat_dir = client.app.state.settings.omni_data_dir / "agent-chat"
     start = next(item for item in requests(chat_dir) if item["method"] == "thread/start")["params"]
     assert start["sandbox"] == "read-only" and start["approvalPolicy"] == "never"
-    assert start["config"]["features"]["shell_tool"] is False and start["config"]["web_search"] == "disabled"
+    assert start["config"]["features"]["shell_tool"] is False and start["config"]["web_search"] == "live"
     reply = client.get(f"/api/conversations/{conversation['id']}").json()["messages"][-1]
     assert reply["agent"] == "codex" and reply["content"][-1] == {"type": "text", "text": "受け取った: こんにちは"}
     assert reply["usage"]["contextWindow"] == 258400 and reply["usage"]["contextUsed"] == 900
@@ -182,3 +182,13 @@ def test_switching_chat_to_code_starts_a_writable_thread(codex_client):
     assert start["sandbox"] == "workspace-write" and start["cwd"] == str(project)
     injected = next(item["params"]["items"] for item in log if item["method"] == "thread/inject_items")
     assert [item["role"] for item in injected] == ["user", "assistant"]  # the Chat turns come along
+
+
+
+def test_chat_web_search_can_be_disabled(tmp_path):
+    from .conftest import make_settings
+    from .test_claude import turn
+    on = CodexAgent(make_settings(tmp_path)).thread_settings(turn(tmp_path, mode="chat"))
+    off = CodexAgent(make_settings(tmp_path, omni_chat_web_search=False)).thread_settings(turn(tmp_path, mode="chat"))
+    assert on["config"]["web_search"] == "live" and off["config"]["web_search"] == "disabled"
+    assert on["sandbox"] == "read-only" and on["config"]["features"]["shell_tool"] is False

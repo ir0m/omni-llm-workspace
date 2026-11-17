@@ -220,3 +220,24 @@ def test_anthropic_on_demand_compaction_request_shape():
     assert sent["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert sent["max_tokens"] <= 16000 and "fallbacks" not in sent
     assert result == [{"role": "assistant", "content": [{"type": "compaction", "content": "summary", "signature": "sig"}]}]
+
+
+def test_chat_web_search_flag_and_separate_replay(client, providers):
+    provider = providers["fake"]
+    provider.web_search, provider.context_format = True, "fake-v1"
+    async def stream(request, model=None):
+        provider.requests.append(request)
+        yield message_chunk("answer")
+        request.replay_messages = [*request.messages, {"role": "assistant", "content": "signed-with-web"}]
+    provider.stream = stream
+    cid = fill(client, 1)
+    assert provider.requests[-1].web_search is True
+    read_events(client, start(client, cid, provider="other")["run_id"])
+    assert providers["other"].requests[-1].web_search is False  # no server-side web tools there
+    read_events(client, start(client, cid)["run_id"])
+    assert "signed-with-web" in str(provider.requests[-1].messages)
+    # Turning web search off changes the tool set: replay data made with it must not be sent
+    client.app.state.settings.omni_chat_web_search = False
+    read_events(client, start(client, cid)["run_id"])
+    assert provider.requests[-1].web_search is False
+    assert "signed-with-web" not in str(provider.requests[-1].messages)

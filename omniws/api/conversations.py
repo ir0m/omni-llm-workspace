@@ -34,6 +34,17 @@ DIRECT_AGENTS = ("codex", "claude_code", "claude_code_api")
 router = APIRouter(prefix="/api/conversations")
 
 
+def chat_web_search(provider: Any, settings: Any) -> bool:
+    """Chat offers the provider's own server-side web tools when it has them and the server allows it."""
+    return bool(settings.omni_chat_web_search and getattr(provider, "web_search", False))
+
+
+def replay_format(provider: Any, settings: Any) -> str | None:
+    """Native replay data is only valid with the same tool set, so web tools are part of its format."""
+    base = getattr(provider, "context_format", None)
+    return f"{base}+web" if base and chat_web_search(provider, settings) else base
+
+
 def db(request: Request):
     yield from request.app.state.get_session()
 
@@ -415,7 +426,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                                         "temporary": conversation.temporary, "approval_mode": conversation.approval_mode,
                                         "rules": list(conversation.allow_rules or [])}
             if agent is None:
-                format = getattr(provider, "context_format", None)
+                format = replay_format(provider, state.settings)
                 checkpoint = (conversation.native_context or {}).get(context_state.native_key(body.provider, body.model, format))
                 if mcp_servers_for(state, conversation.mcp_off or []):
                     checkpoint = None
@@ -491,9 +502,9 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                 if status == "complete" and chat_request.replay_messages is not None and not chat_request.tools:
                     conversation = session.get(Conversation, conversation_id)
                     checkpoint = {"provider": body.provider, "model": body.model, "system": body.system,
-                        "format": getattr(provider, "context_format", None), "through_seq": prepared["seq"], "fingerprint": context_state.fingerprint(conversation.messages),
+                        "format": replay_format(provider, state.settings), "through_seq": prepared["seq"], "fingerprint": context_state.fingerprint(conversation.messages),
                         "messages": chat_request.replay_messages}
-                    key = context_state.native_key(body.provider, body.model, getattr(provider, "context_format", None))
+                    key = context_state.native_key(body.provider, body.model, replay_format(provider, state.settings))
                     conversation.native_context = {**(conversation.native_context or {}), key: checkpoint}
                 return
             if prepared["temporary"] or not native_box["id"]:
@@ -530,7 +541,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
 
     if agent is None:
         chat_request = ChatRequest(model=body.model, messages=prepared["history"], system=body.system, effort=body.effort,
-                                   data_dir=settings.omni_data_dir)
+                                   data_dir=settings.omni_data_dir, web_search=chat_web_search(provider, settings))
 
         servers = mcp_servers_for(state, prepared["mcp_off"]) if hasattr(provider, "tool_results") else []
         if servers:
@@ -711,7 +722,7 @@ async def compact_native_context(conversation_id: str, body: CompactContext, req
         with state.sessions() as session:
             conversation = find(session, conversation_id)
             provider = state.registry.get(body.provider)
-            key = context_state.native_key(body.provider, body.model, getattr(provider, "context_format", None))
+            key = context_state.native_key(body.provider, body.model, replay_format(provider, state.settings))
             checkpoint = (conversation.native_context or {}).get(key)
             record = next((r for r in conversation.agent_sessions if r.agent == body.provider), None)
             native_id = record.native_id if record else None
@@ -728,7 +739,9 @@ async def compact_native_context(conversation_id: str, body: CompactContext, req
                     if not checkpoint_valid or checkpoint["provider"] != body.provider or checkpoint["model"] != body.model:
                         raise HTTPException(400, "この実行元・モデルで会話を続けてから圧縮してください")
                     query = ChatRequest(model=body.model, messages=checkpoint["messages"], system=checkpoint.get("system"),
-                                        data_dir=state.settings.omni_data_dir)
+                                        data_dir=state.settings.omni_data_dir,
+                                        # The checkpoint key includes the tool set, so it matches the current one
+                                        web_search=chat_web_search(provider, state.settings))
                     compacted = await provider.compact(query, await state.registry.model(body.provider, body.model))
                     with state.sessions.begin() as session:
                         conversation = find(session, conversation_id)

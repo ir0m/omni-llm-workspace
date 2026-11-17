@@ -45,6 +45,8 @@ class ChatRequest:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     assistant_turn: dict[str, Any] | None = None
     replay_messages: list[dict[str, Any]] | None = None
+    # Offer the provider's own (server-side) web search and fetch tools, where it has them
+    web_search: bool = False
     # Where attachment references in `messages` are read from (OMNI_DATA_DIR); None leaves a note instead
     data_dir: Path | None = None
 

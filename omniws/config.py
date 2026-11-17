@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     omni_allow_mcp: bool = False
     omni_allow_mcp_stdio: bool = False
 
+    # Web search in Chat (Claude API, Claude Code, Codex). Searches run on each provider's service;
+    # the query and the pages it reads go there, never fetched from this machine.
+    omni_chat_web_search: bool = True
+
     # Permissions for Code mode. .env is the upper limit; conversations can only be stricter.
     omni_approval_default: Literal["ask", "auto_edit", "auto"] = "auto_edit"
     omni_approval_max: Literal["ask", "auto_edit", "auto"] = "auto"

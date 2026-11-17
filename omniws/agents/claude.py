@@ -375,7 +375,9 @@ class ClaudeCodeAgent:
         if turn.temporary:
             values["extra_args"] = {"no-session-persistence": None}
         if turn.mode == "chat":
-            values["tools"] = []
+            # Chat: no tools on this machine. Web search runs on Anthropic's side (WebFetch would fetch from here).
+            web = ["WebSearch"] if self.settings.omni_chat_web_search else []
+            values.update(tools=web, allowed_tools=web)
         else:
             prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
             if (instructions := claude_md(turn.cwd)):

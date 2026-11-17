@@ -166,3 +166,47 @@ def test_chat_history():
     history = chat_history([message(1, "assistant", "挨拶"), message(2, "user", "a"), message(3, "user", "b"),
                             message(4, "assistant", "考え", kind="thinking"), message(5, "assistant", "答え")])
     assert history == [{"role": "user", "content": "a\n\nb"}, {"role": "assistant", "content": "答え"}]
+
+
+def test_anthropic_web_tools_follow_model_and_flag():
+    from omniws.providers.anthropic_api import request_options
+    request = ChatRequest(model="claude-opus-5-5", messages=[{"role": "user", "content": "q"}], web_search=True)
+    names = [tool["type"] for tool in request_options(request, None)["tools"]]
+    assert names == ["web_search_20260209", "web_fetch_20260209"]
+    request.model = "claude-haiku-4-5"
+    assert [tool["type"] for tool in request_options(request, None)["tools"]] == ["web_search_20250305"]
+    request.web_search = False
+    assert "tools" not in request_options(request, None)
+    request.web_search, request.tools = True, [{"name": "mcp", "description": "d", "schema": {"type": "object"}}]
+    assert [tool.get("type", tool["name"]) for tool in request_options(request, None)["tools"]] == ["mcp", "web_search_20250305"]
+
+
+def test_anthropic_web_search_cards_and_pause_turn_continuation():
+    search = SimpleNamespace(type="server_tool_use", id="srv1", name="web_search", input={})
+    done = SimpleNamespace(type="server_tool_use", id="srv1", name="web_search", input={"query": "天気"},
+                           model_dump=lambda **kw: {"type": "server_tool_use", "id": "srv1", "name": "web_search", "input": {"query": "天気"}})
+    result = SimpleNamespace(type="web_search_tool_result", tool_use_id="srv1",
+                             content=[SimpleNamespace(type="web_search_result", title="気象庁", url="https://www.jma.go.jp/")],
+                             model_dump=lambda **kw: {"type": "web_search_tool_result", "tool_use_id": "srv1", "content": []})
+    usage = SimpleNamespace(input_tokens=1, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    paused = SimpleNamespace(stop_reason="pause_turn", content=[done, result], usage=usage)
+    finished = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="晴れ")], usage=usage)
+    streams = [FakeStream([SimpleNamespace(type="content_block_start", content_block=search),
+                           SimpleNamespace(type="content_block_start", content_block=result)], paused),
+               FakeStream([SimpleNamespace(type="text", text="晴れ")], finished)]
+    sent = []
+    def stream(**options):
+        sent.append(list(options["messages"]))
+        return streams.pop(0)
+    client = SimpleNamespace(messages=SimpleNamespace(stream=stream))
+    provider = anthropic_api.AnthropicProvider("test", client=client)
+    request = ChatRequest(model="claude-opus-4-6", messages=[{"role": "user", "content": "q"}], web_search=True)
+    updates = collect(provider, request)
+    cards = [u for u in updates if u["sessionUpdate"].startswith("tool_call")]
+    assert cards[0] == {"sessionUpdate": "tool_call", "toolCallId": "srv1", "kind": "fetch", "title": "Web検索", "status": "in_progress"}
+    assert cards[1]["status"] == "completed" and "https://www.jma.go.jp/" in cards[1]["output"]
+    assert cards[2]["title"] == "Web検索: 天気"
+    # The paused turn is sent back unchanged so the server continues it
+    assert len(sent) == 2 and sent[1][-1]["role"] == "assistant" and sent[1][-1]["content"][0]["type"] == "server_tool_use"
+    assert request.replay_messages[-1]["content"] == [{"type": "text", "text": "晴れ"}]
+    assert sum(1 for u in updates if u["sessionUpdate"] == "usage_update") == 2

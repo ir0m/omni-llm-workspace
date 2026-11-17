@@ -27,7 +27,7 @@ from .jsonrpc import JsonRpcProcess, RpcError
 OUTPUT_LIMIT = 12_000
 LIVE_OUTPUT = 4_000
 ACCOUNT_SECONDS = 60
-# Chat turns: no shell, apps or plugins; no web search
+# Chat turns: no shell, apps or plugins (web search follows OMNI_CHAT_WEB_SEARCH)
 CHAT_FEATURES_OFF = ("shell_tool", "unified_exec", "plugins", "apps", "hooks", "browser_use", "computer_use", "view_image")
 STATUS = {"inProgress": "in_progress", "completed": "completed", "failed": "failed", "declined": "failed"}
 PLAN_STATUS = {"pending": "pending", "inProgress": "in_progress", "completed": "completed"}
@@ -311,7 +311,7 @@ class CodexAgent:
         if turn.mode == "chat":
             settings = {"sandbox": "read-only", "approvalPolicy": "never"}
             config["features"] = {name: False for name in CHAT_FEATURES_OFF}
-            config["web_search"] = "disabled"
+            config["web_search"] = "live" if self.settings.omni_chat_web_search else "disabled"
         else:
             settings = {"sandbox": "workspace-write", "approvalPolicy": "untrusted"}
             config["sandbox_workspace_write"] = {"network_access": self.settings.omni_allow_network}
