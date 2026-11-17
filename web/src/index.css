@@ -72,6 +72,9 @@ body {
 .markdown th, .markdown td { min-width: 7em; max-width: 24em; overflow-wrap: break-word; }
 .markdown th { background: var(--color-surface); font-weight: 600; }
 .markdown hr { border-color: var(--color-border); }
+/* Long formulas scroll on their own instead of widening the message (phones). */
+.markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
+.markdown .katex { overflow-wrap: normal; }
 
 /* Code highlighting (highlight.js classes) */
 :root { --hl-keyword: #8250df; --hl-string: #0a7d32; --hl-comment: #6e7781; --hl-number: #0550ae; --hl-title: #953800; --hl-attr: #116329; }

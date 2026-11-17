@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
+import { mayHaveMath, prepareMath } from '../math'
 import { Check, Copy, Download, File as FileIcon, GitBranch } from 'lucide-react'
 import { attachmentsOf, attachmentUrl, errorText, textOf, type AttachmentInfo, type Block, type Executor, type Message, type ToolCall, type Usage } from '../api'
 import { PlanSummary } from './PlanBar'
@@ -64,12 +65,32 @@ function CopyButton({ text, label = 'コピー' }: { text: string; label?: strin
   )
 }
 
+type MathPlugins = typeof import('../mathPlugins')
+let mathPlugins: MathPlugins | null = null
+let mathLoading: Promise<MathPlugins> | null = null
+
+/** KaTeX is loaded the first time a message contains math. */
+function useMath(wanted: boolean): MathPlugins | null {
+  const [plugins, setPlugins] = useState(mathPlugins)
+  useEffect(() => {
+    if (!wanted || plugins) return
+    let active = true
+    mathLoading ??= import('../mathPlugins').then((loaded) => (mathPlugins = loaded))
+    mathLoading.then((loaded) => { if (active) setPlugins(loaded) }, () => { mathLoading = null })
+    return () => { active = false }
+  }, [wanted, plugins])
+  return wanted ? plugins : null
+}
+
 export function Markdown({ text, image }: { text: string; image?: (src: string) => string | null }) {
+  const math = useMath(mayHaveMath(text))
   return (
     <div className="markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
+        remarkPlugins={math ? [remarkGfm, math.remarkMath] : [remarkGfm]}
+        rehypePlugins={math
+          ? [[math.rehypeKatex, { strict: false, trust: false, throwOnError: false }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]
+          : [[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
           // Documents refer to images beside them; the caller maps those paths to URLs the server can serve.
@@ -91,7 +112,7 @@ export function Markdown({ text, image }: { text: string; image?: (src: string) 
           },
         }}
       >
-        {text}
+        {math ? prepareMath(text) : text}
       </ReactMarkdown>
     </div>
   )
