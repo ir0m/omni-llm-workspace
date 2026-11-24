@@ -28,6 +28,8 @@ function remembered(): { project?: string; path?: string; showHidden?: boolean }
 const isCompiled = (path: string) => /\.(typ|tex)$/i.test(path)
 const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path)
 const folderOf = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : ''
+const inside = (path: string, folder: string) => path.startsWith(`${folder}/`)
+const sizeText = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
 
 export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, onError }: {
   projects: ProjectList | null; canEdit: boolean; canCompile: boolean
@@ -52,6 +54,8 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
   const [indexError, setIndexError] = useState<string | null>(null)
   const [fragment, setFragment] = useState('')
   const [form, setForm] = useState<Form | null>(null)
+  // The folder last clicked in the list, for rename and delete; cleared when a file is opened
+  const [folder, setFolder] = useState<string | null>(null)
   const [built, setBuilt] = useState<{ key: string; result: CompileResult } | null>(null)
   const [building, setBuilding] = useState(false)
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -180,6 +184,7 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
   const leave = () => !dirty || window.confirm('保存していない変更があります。破棄して移動しますか？')
 
   function open(next: string, heading = '') {
+    setFolder(null)
     if (next === path) { setFragment(heading); return }
     if (!leave()) return
     setFragment(heading)
@@ -239,6 +244,12 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
         await api.saveFile(project, value, '', null, true)
         setDirty(false)
         setPath(value)
+      } else if (folder) {
+        if (dirty && path && inside(path, folder)) { setProblem('改名の前に保存してください'); return }
+        await api.moveFile(project, folder, value)
+        // The open file moves with its folder
+        if (path && inside(path, folder)) setPath(value + path.slice(folder.length))
+        setFolder(value)
       } else if (path) {
         if (dirty) { setProblem('改名の前に保存してください'); return }
         await api.moveFile(project, path, value)
@@ -253,11 +264,24 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
   }
 
   async function remove() {
-    if (!project || !path || !window.confirm(`${path} を削除しますか？この操作は元に戻せません。`)) return
+    if (!project) return
     try {
-      await api.deleteFile(project, path)
-      setDirty(false)
-      setPath(null)
+      if (folder) {
+        const summary = await api.folderSummary(project, folder)
+        const entries = summary.files + summary.folders
+        const opened = !!path && inside(path, folder)
+        const detail = entries ? `中のファイル${summary.files}件・フォルダ${summary.folders}件（${sizeText(summary.size)}）もすべて削除します。` : ''
+        const unsaved = opened && dirty ? '開いているファイルの保存していない変更も失われます。' : ''
+        if (!window.confirm(`フォルダ「${folder}」を削除しますか？${detail}${unsaved}この操作は元に戻せません。`)) return
+        await api.deleteFile(project, folder, entries ? entries : undefined)
+        if (opened) { setDirty(false); setPath(null) }
+        setFolder(null)
+      } else {
+        if (!path || !window.confirm(`${path} を削除しますか？この操作は元に戻せません。`)) return
+        await api.deleteFile(project, path)
+        setDirty(false)
+        setPath(null)
+      }
       setVersion((current) => current + 1)
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onError(error)
@@ -286,7 +310,7 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
         className={`rounded-lg p-1.5 ${treeOpen ? 'bg-raised text-fg' : 'text-muted hover:text-fg'}`}><FolderTree className="size-5" aria-hidden /></button>
       <h1 className="hidden text-sm font-medium sm:block">Docs</h1>
       <select value={known ? project! : ''} aria-label="プロジェクト"
-        onChange={(event) => { if (leave()) { setDirty(false); setProject(event.target.value || null); setPath(null); setForm(null); setTreeOpen(true) } }}
+        onChange={(event) => { if (leave()) { setDirty(false); setProject(event.target.value || null); setPath(null); setFolder(null); setForm(null); setTreeOpen(true) } }}
         className="min-w-0 max-w-[8rem] rounded-lg border border-border bg-bg px-2 py-1 text-sm sm:max-w-xs">
         <option value="">プロジェクトを選択</option>
         {names.map((name) => <option key={name} value={name}>{name}</option>)}
@@ -335,10 +359,12 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
         {known ? <>
           <div className="flex items-center border-b border-border px-1">
             {canEdit && <>
-              <button onClick={() => setForm({ kind: 'file', value: folderOf(path ?? '') })} className={icon} aria-label="新しいファイル" title="新しいファイル"><FilePlus className="size-4" aria-hidden /></button>
-              <button onClick={() => setForm({ kind: 'folder', value: folderOf(path ?? '') })} className={icon} aria-label="新しいフォルダ" title="新しいフォルダ"><FolderPlus className="size-4" aria-hidden /></button>
-              <button onClick={() => path && setForm({ kind: 'rename', value: path })} disabled={!path} className={icon} aria-label="改名・移動" title="改名・移動"><Pencil className="size-4" aria-hidden /></button>
-              <button onClick={() => void remove()} disabled={!path} className={icon} aria-label="削除" title="削除"><Trash2 className="size-4" aria-hidden /></button>
+              <button onClick={() => setForm({ kind: 'file', value: folder ? `${folder}/` : folderOf(path ?? '') })} className={icon} aria-label="新しいファイル" title="新しいファイル"><FilePlus className="size-4" aria-hidden /></button>
+              <button onClick={() => setForm({ kind: 'folder', value: folder ? `${folder}/` : folderOf(path ?? '') })} className={icon} aria-label="新しいフォルダ" title="新しいフォルダ"><FolderPlus className="size-4" aria-hidden /></button>
+              <button onClick={() => { const target = folder ?? path; if (target) setForm({ kind: 'rename', value: target }) }} disabled={!folder && !path} className={icon}
+                aria-label={folder ? 'フォルダを改名・移動' : '改名・移動'} title={folder ? `フォルダ「${folder}」を改名・移動` : '改名・移動'}><Pencil className="size-4" aria-hidden /></button>
+              <button onClick={() => void remove()} disabled={!folder && !path} className={icon}
+                aria-label={folder ? 'フォルダを削除' : '削除'} title={folder ? `フォルダ「${folder}」を削除` : '削除'}><Trash2 className="size-4" aria-hidden /></button>
             </>}
             <span className="flex-1" />
             <button onClick={() => setVersion((value) => value + 1)} className={icon} aria-label="ファイル一覧を更新" title="ファイル一覧を更新"><RefreshCw className="size-4" aria-hidden /></button>
@@ -377,7 +403,7 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
             </div>
           </form>}
           <div className="min-h-0 flex-1 overflow-y-auto py-1">
-            <Tree project={project!} path="" depth={0} version={version} selected={path} onSelect={open} showHidden={showHidden} />
+            <Tree project={project!} path="" depth={0} version={version} selected={folder ?? path} onSelect={open} onFolder={setFolder} showHidden={showHidden} />
           </div>
         </> : <p className="p-4 text-sm text-muted">{projects ? 'プロジェクトを選択してください' : '読み込み中…'}</p>}
       </aside>}

@@ -438,8 +438,11 @@ export const api = {
     `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path, full: 'true' })}`),
   saveFile: (project: string, path: string, text: string, baseHash: string | null, create = false) => request<SavedFile>('PUT',
     `/api/projects/${projectPath(project)}/file`, { path, text, base_hash: baseHash, create }),
-  deleteFile: (project: string, path: string) => request<{ path: string }>('DELETE',
-    `/api/projects/${projectPath(project)}/file?${new URLSearchParams({ path })}`),
+  /** A folder with content needs `expected`: the entry count from folderSummary that the user confirmed */
+  deleteFile: (project: string, path: string, expected?: number) => request<{ path: string }>('DELETE',
+    `/api/projects/${projectPath(project)}/file?${new URLSearchParams(expected === undefined ? { path } : { path, recursive: 'true', expected: String(expected) })}`),
+  folderSummary: (project: string, path: string) => request<{ path: string; files: number; folders: number; size: number }>('GET',
+    `/api/projects/${projectPath(project)}/folder?${new URLSearchParams({ path })}`),
   makeFolder: (project: string, path: string) => request<{ path: string }>('POST', `/api/projects/${projectPath(project)}/folder`, { path }),
   moveFile: (project: string, path: string, to: string) => request<{ path: string }>('POST', `/api/projects/${projectPath(project)}/move`, { path, to }),
   imageUrl: (project: string, path: string, version: number) =>
@@ -470,6 +473,24 @@ export const errorText: Record<string, string> = {
   unknown: 'エラーが起きました',
 }
 
+/**
+ * Text blocks are separate only when something else (a tool call, thinking) came between them, so they are
+ * separate paragraphs: joined with a blank line, or "前の文## 見出し" would lose its heading (same as omniws/history.py).
+ */
+export function joinText(parts: string[]): string {
+  let out = ''
+  for (const part of parts) {
+    if (!part) continue
+    if (out) {
+      const trailing = out.length - out.replace(/\n+$/, '').length
+      const leading = part.length - part.replace(/^\n+/, '').length
+      out += '\n'.repeat(Math.max(0, 2 - trailing - leading))
+    }
+    out += part
+  }
+  return out
+}
+
 export function textOf(message: Message | { content: Block[] }): string {
-  return message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+  return joinText(message.content.map((block) => (block.type === 'text' ? block.text : '')))
 }

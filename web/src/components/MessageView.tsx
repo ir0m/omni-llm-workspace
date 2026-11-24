@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { mayHaveMath, prepareMath } from '../math'
-import { Check, Copy, Download, File as FileIcon, GitBranch } from 'lucide-react'
+import { copyText, nodeText } from '../clipboard'
+import { Check, Copy, Download, File as FileIcon, GitBranch, X } from 'lucide-react'
 import { attachmentsOf, attachmentUrl, errorText, textOf, type AttachmentInfo, type Block, type Executor, type Message, type ToolCall, type Usage } from '../api'
 import { PlanSummary } from './PlanBar'
 import { sizeLabel } from '../attach'
@@ -52,15 +53,20 @@ export function UsageLine({ usage }: { usage: Usage }) {
 }
 
 function CopyButton({ text, label = 'コピー' }: { text: string; label?: string }) {
-  const [done, setDone] = useState(false)
+  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle')
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  async function copy() {
+    const ok = await copyText(text)
+    setState(ok ? 'done' : 'failed')
+    window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => setState('idle'), ok ? 1500 : 3000)
+  }
+  const title = state === 'failed' ? 'コピーできませんでした' : state === 'done' ? 'コピーしました' : label
   return (
-    <button
-      onClick={() => navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) })}
-      className="rounded p-1 text-muted hover:text-fg"
-      title={label}
-      aria-label={label}
-    >
-      {done ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+    <button onClick={() => void copy()} className={`rounded p-1 hover:text-fg ${state === 'failed' ? 'text-danger' : 'text-muted'}`}
+      title={title} aria-label={title}>
+      {state === 'done' ? <Check className="size-3.5" aria-hidden /> : state === 'failed' ? <X className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
     </button>
   )
 }
@@ -99,8 +105,8 @@ export function Markdown({ text, image }: { text: string; image?: (src: string) 
             return url ? <img {...props} src={url} loading="lazy" /> : <span className="text-muted">［画像: {props.alt || String(src ?? '')}］</span>
           } } : {}),
           pre: ({ node, children, ...props }) => {
-            const code = node?.children?.[0]
-            const raw = code && 'children' in code ? code.children.map((child) => ('value' in child ? child.value : '')).join('') : ''
+            // Highlighted code is split into spans: take the text of every descendant, not only direct text nodes
+            const raw = nodeText(node?.children?.[0])
             return (
               <div className="group relative">
                 <pre {...props}>{children}</pre>

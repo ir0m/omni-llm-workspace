@@ -8,6 +8,7 @@ import errno
 import hashlib
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -24,6 +25,7 @@ PDF_LIMIT = 64 * 1024 * 1024
 GIT_LIMIT = 2 * 1024 * 1024
 PATCH_LIMIT = 512 * 1024
 PATCH_LINES = 5000
+FOLDER_DELETE_LIMIT = 50_000  # entries; larger trees are left to the terminal or an agent
 PRIVATE_DIRS = {".git", "data", ".ssh", ".aws", ".gnupg", ".codex", ".claude"}
 PRIVATE_FILES = {"credentials", "credentials.json", "auth.json", "token", "token.json", "tokens.json",
                  "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".npmrc", ".netrc", ".pypirc"}
@@ -254,8 +256,63 @@ class ProjectFiles:
             os.rename(name, new_name, src_dir_fd=source, dst_dir_fd=target)
         return {"path": to}
 
-    def delete(self, path: str) -> dict:
-        """Delete one file or one empty folder. Folders with content are left to the terminal or an agent."""
+    def folder_contents(self, descriptor: int, name: str, parts: tuple[str, ...]) -> dict:
+        """Count what deleting a folder removes. Refuses trees holding what Docs never shows (secrets, .git,
+        the app's data), other file systems (mount points) and special files, so a deletion never removes
+        something the user could not see in the list."""
+        files = folders = size = 0
+        root = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+        device = os.fstat(root).st_dev
+        stack: list[tuple[int, tuple[str, ...]]] = [(root, parts)]
+        try:
+            while stack:
+                folder, where = stack.pop()
+                try:
+                    with os.scandir(folder) as scan:
+                        entries = list(scan)
+                    for entry in entries:
+                        child = (*where, entry.name)
+                        if not self.allowed(child):
+                            raise FileError(409, f"{'/'.join(child)} は Docs に表示されない項目（秘密情報・.git・アプリのデータなど）のため、"
+                                                 "このフォルダは削除できません。端末やエージェントで削除してください")
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            if info.st_dev != device:
+                                raise FileError(409, f"{'/'.join(child)} は別のファイルシステムのため、このフォルダは削除できません")
+                            folders += 1
+                            stack.append((os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=folder), child))
+                        elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                            files += 1
+                            size += info.st_size if stat.S_ISREG(info.st_mode) else 0
+                        else:
+                            raise FileError(409, f"{'/'.join(child)} は特殊ファイルのため、このフォルダは削除できません")
+                        if files + folders > FOLDER_DELETE_LIMIT:
+                            raise FileError(413, "項目が多すぎるため削除できません。端末やエージェントで削除してください")
+                finally:
+                    os.close(folder)
+        finally:
+            for folder, _ in stack:
+                os.close(folder)
+        return {"files": files, "folders": folders, "size": size}
+
+    def folder_summary(self, path: str) -> dict:
+        """What deleting the folder at `path` removes, for the confirmation."""
+        parts = parts_of(path)
+        with self.parent(path) as (descriptor, name):
+            info = self.entry(descriptor, name)
+            if info is None:
+                raise FileError(404, "フォルダが見つかりません")
+            if not stat.S_ISDIR(info.st_mode):
+                raise FileError(400, "フォルダを指定してください")
+            try:
+                return {"path": path, **self.folder_contents(descriptor, name, parts)}
+            except FileNotFoundError as exc:
+                raise FileError(409, "フォルダの中身が変わりました。もう一度お試しください") from exc
+
+    def delete(self, path: str, recursive: bool = False, expected: int | None = None) -> dict:
+        """Delete a file, a link, or a folder. A folder with content needs `recursive` and the number of entries
+        the user confirmed (`expected`), so nothing added after the confirmation is removed unseen."""
+        parts = parts_of(path)
         with self.parent(path) as (descriptor, name):
             info = self.entry(descriptor, name)
             if info is None:
@@ -264,9 +321,18 @@ class ProjectFiles:
                 try:
                     os.rmdir(name, dir_fd=descriptor)
                 except OSError as exc:
-                    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
-                        raise FileError(409, "空でないフォルダは削除できません") from exc
-                    raise
+                    if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                        raise
+                    if not recursive:
+                        raise FileError(409, "空でないフォルダです。中身ごと削除するには確認が必要です") from exc
+                    try:
+                        contents = self.folder_contents(descriptor, name, parts)
+                    except FileNotFoundError as missing:
+                        raise FileError(409, "フォルダの中身が変わりました。もう一度お試しください") from missing
+                    if expected is None or contents["files"] + contents["folders"] != expected:
+                        raise FileError(409, "確認した後にフォルダの中身が変わりました。もう一度確認してください")
+                    # Descriptor-based removal: links inside are removed as links, never followed
+                    shutil.rmtree(name, dir_fd=descriptor)
             elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 os.unlink(name, dir_fd=descriptor)  # removing a link removes the link itself, never its target
             else:

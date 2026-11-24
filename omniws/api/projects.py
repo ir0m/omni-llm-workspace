@@ -126,8 +126,16 @@ async def save_file(name: str, body: SaveFile, request: Request):
 
 
 @router.delete("/{name:path}/file")
-async def delete_file(name: str, request: Request, path: str = Query(max_length=4096)):
-    return await edit(request, name, "delete", path)
+async def delete_file(name: str, request: Request, path: str = Query(max_length=4096), recursive: bool = False,
+                      expected: int | None = Query(default=None, ge=0)):
+    """A folder with content needs `recursive` and the entry count from its summary (`expected`)."""
+    return await edit(request, name, "delete", path, recursive, expected)
+
+
+@router.get("/{name:path}/folder")
+async def folder_summary(name: str, request: Request, path: str = Query(max_length=4096)):
+    """What deleting a folder would remove: counts for the confirmation."""
+    return await edit(request, name, "folder_summary", path)
 
 
 @router.post("/{name:path}/folder", status_code=201)

@@ -13,10 +13,12 @@ const failure = (error: unknown) => error instanceof Error ? error.message : '�
 const sizeLabel = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB`
   : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
 
-type TreeProps = { project: string; path: string; depth: number; version: number; selected: string | null; onSelect: (path: string) => void; showHidden?: boolean }
+type TreeProps = { project: string; path: string; depth: number; version: number; selected: string | null; onSelect: (path: string) => void; showHidden?: boolean
+  /** Called when a folder is clicked (it also opens or closes), so it can be renamed or deleted */
+  onFolder?: (path: string) => void }
 
 export function Tree(props: TreeProps) {
-  const { project, path, version, depth, selected, onSelect, showHidden = true } = props
+  const { project, path, version, depth, selected, onSelect, onFolder, showHidden = true } = props
   const [tree, setTree] = useState<FileTree | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
@@ -59,11 +61,12 @@ export function Tree(props: TreeProps) {
         const unavailable = !folder && entry.kind !== 'file'
         return <li key={entry.path}>
           <button disabled={unavailable} aria-expanded={folder ? open : undefined}
-            aria-label={entry.name} aria-current={!folder && selected === entry.path ? 'true' : undefined}
+            aria-label={entry.name} aria-current={selected === entry.path && (!folder || onFolder) ? 'true' : undefined}
             title={unavailable ? `${entry.name}（リンク・特殊ファイルは閲覧できません）` : entry.path}
             onClick={() => {
-              if (!folder) onSelect(entry.path)
-              else setExpanded((old) => {
+              if (!folder) { onSelect(entry.path); return }
+              onFolder?.(entry.path)
+              setExpanded((old) => {
                 const next = new Set(old)
                 if (next.has(entry.path)) next.delete(entry.path)
                 else next.add(entry.path)

@@ -192,3 +192,13 @@ def test_chat_web_search_can_be_disabled(tmp_path):
     off = CodexAgent(make_settings(tmp_path, omni_chat_web_search=False)).thread_settings(turn(tmp_path, mode="chat"))
     assert on["config"]["web_search"] == "live" and off["config"]["web_search"] == "disabled"
     assert on["sandbox"] == "read-only" and on["config"]["features"]["shell_tool"] is False
+
+
+def test_back_to_back_messages_stay_separate_paragraphs(codex_client):
+    client = codex_client
+    conversation = client.post("/api/conversations", json={}).json()
+    started = client.post(f"/api/conversations/{conversation['id']}/messages",
+                          json={"text": "二通", "provider": "codex", "model": "gpt-b"}).json()
+    assert follow(client, started["run_id"])[-1][1]["status"] == "complete"
+    reply = client.get(f"/api/conversations/{conversation['id']}").json()["messages"][-1]
+    assert reply["content"][-1] == {"type": "text", "text": "受け取った: 二通\n\n## 見出し"}

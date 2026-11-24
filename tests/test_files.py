@@ -340,3 +340,44 @@ def test_oversized_saves_are_refused(client, editable):
     assert not (editable / "big.txt").exists()
     client.post("/api/auth/logout")
     assert client.put("/api/projects/app/file", json={"path": "a.txt", "text": "x", "create": True}).status_code == 401
+
+
+def test_folder_with_content_is_deleted_after_confirmation(client, editable, tmp_path):
+    tree = editable / "notes"
+    (tree / "sub" / "deep").mkdir(parents=True)
+    (tree / "a.md").write_text("abc")
+    (tree / "sub" / "b.md").write_text("de")
+    (tree / ".hidden.md").write_text("f")  # dotfiles are not secret: counted and deleted
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    (tree / "sub" / "link").symlink_to(outside, target_is_directory=True)
+    summary = client.get("/api/projects/app/folder", params={"path": "notes"}).json()
+    assert summary == {"path": "notes", "files": 4, "folders": 2, "size": 6}
+    url, base = "/api/projects/app/file", {"path": "notes"}
+    assert client.delete(url, params=base).status_code == 409  # not without confirmation
+    assert client.delete(url, params={**base, "recursive": True}).status_code == 409  # nor without the count
+    (tree / "late.md").write_text("added after the confirmation")
+    assert client.delete(url, params={**base, "recursive": True, "expected": 6}).status_code == 409
+    assert (tree / "late.md").exists()
+    assert client.delete(url, params={**base, "recursive": True, "expected": 7}).status_code == 200
+    assert not tree.exists()
+    assert (outside / "keep.txt").read_text() == "keep"  # a link inside is removed as a link, never followed
+
+
+@pytest.mark.parametrize("hidden", [".env", ".git/config", "keys/server.pem", "data/x.txt"])
+def test_folder_holding_hidden_entries_is_refused(client, editable, hidden):
+    target = editable / "box" / hidden
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret")
+    assert client.get("/api/projects/app/folder", params={"path": "box"}).status_code == 409
+    assert client.delete("/api/projects/app/file", params={"path": "box", "recursive": True, "expected": 2}).status_code == 409
+    assert target.read_text() == "secret"
+
+
+def test_folder_summary_rules(client, editable, project):
+    assert client.get("/api/projects/app/folder", params={"path": "delete.txt"}).status_code == 400
+    assert client.get("/api/projects/app/folder", params={"path": "missing"}).status_code == 404
+    assert client.get("/api/projects/app/folder", params={"path": ""}).status_code == 400  # never the project itself
+    client.app.state.settings.omni_allow_file_edit = False
+    assert client.get("/api/projects/app/folder", params={"path": "src"}).status_code == 403

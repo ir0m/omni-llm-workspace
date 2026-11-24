@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..models import Message
-from ..history import segments
+from ..history import segments, text_blocks
 
 KIND_LABEL = {"read": "読んだ", "search": "検索した", "edit": "編集した", "delete": "削除した", "move": "移動した",
               "execute": "実行した", "fetch": "取得した"}
@@ -26,7 +26,7 @@ def describe(message: Message) -> str:
 
 
 def describe_part(message: Message, role: str, content: list[dict]) -> str:
-    text = "".join(block.get("text", "") for block in content if block.get("type") == "text").strip()
+    text = text_blocks(content).strip()
     if role == "user":
         files = [f"[添付: {block.get('name')}]" for block in content if block.get("type") == "attachment"]
         return "\n".join(["[user]", *([text] if text else []), *files])

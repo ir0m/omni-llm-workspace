@@ -438,6 +438,9 @@ class CodexAgent:
                 turn.on_input_ready(steer)
             outputs: dict[str, str] = {}
             streamed: set[str] = set()
+            # The agent message the reply's last text came from. Two messages in a row (e.g. a progress note,
+            # then the answer) would otherwise run together as "…ます。## 見出し" in one block.
+            text_from: str | None = None
             failure: dict[str, Any] | None = None
             usage: Update | None = None
             while True:
@@ -446,21 +449,33 @@ class CodexAgent:
                     raise ProviderError("unknown", "Codex が終了しました")
                 method, data = message["method"], message["params"]
                 if method == "item/agentMessage/delta":
-                    streamed.add(data.get("itemId", ""))
-                    yield message_chunk(data.get("delta", ""))
+                    item_id = data.get("itemId", "")
+                    streamed.add(item_id)
+                    delta = data.get("delta", "")
+                    if delta and text_from is not None and text_from != item_id:
+                        yield message_chunk("\n\n")
+                    if delta:
+                        text_from = item_id
+                    yield message_chunk(delta)
                 elif method == "item/reasoning/summaryTextDelta":
+                    text_from = None  # thinking starts a new block
                     yield thought_chunk(data.get("delta", ""))
                 elif method == "item/reasoning/summaryPartAdded":
+                    text_from = None
                     yield thought_chunk("\n\n")
                 elif method in ("item/started", "item/completed"):
                     item = data.get("item") or {}
                     items[item.get("id", "")] = item
                     if item.get("type") == "agentMessage" and method == "item/completed" and item.get("id") not in streamed:
                         if item.get("text"):
+                            if text_from is not None and text_from != item.get("id"):
+                                yield message_chunk("\n\n")
+                            text_from = item.get("id")
                             yield message_chunk(item["text"])
                     update = item_update("tool_call" if method == "item/started" else "tool_call_update", item,
                                          turn.cwd, outputs.get(item.get("id", "")))
                     if update:
+                        text_from = None  # a tool card starts a new block
                         yield update
                 elif method == "item/commandExecution/outputDelta":
                     item_id = data.get("itemId", "")

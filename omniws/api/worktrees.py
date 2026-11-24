@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from ..db import now_ms
 from ..projects import check_name
 from ..files import FileError, ProjectFiles, parts_of, PATCH_LIMIT, PATCH_LINES
+from ..history import text_blocks
 from ..models import AppSetting, Conversation
 from ..agents.base import PermissionRequest
 from ..agents.policy import denied_by_env
@@ -177,7 +178,7 @@ async def result(name: str, request: Request):
         with state.sessions() as session:
             conversation = session.get(Conversation, record["conversation_id"])
             last = next((m for m in reversed(conversation.messages) if m.role == "assistant"), None) if conversation else None
-            answer = "".join(b.get("text", "") for b in last.content if b.get("type") == "text") if last else ""
+            answer = text_blocks(last.content) if last else ""
         return {"changes": changes, "paths": committed, "answer": answer[-20000:]}
     return await operation(read)
 

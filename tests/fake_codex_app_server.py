@@ -82,6 +82,9 @@ def run_turn(request_id, params):
     event(tid, "item/agentMessage/delta", itemId="m1", delta="受け取った: ")
     event(tid, "item/agentMessage/delta", itemId="m1", delta=params["input"][0]["text"])
     event(tid, "item/completed", item={"type": "agentMessage", "id": "m1", "text": "…"})
+    if params["input"][0]["text"] == "二通":  # a second message right after the first, no tool in between
+        event(tid, "item/agentMessage/delta", itemId="m2", delta="## 見出し")
+        event(tid, "item/completed", item={"type": "agentMessage", "id": "m2", "text": "## 見出し"})
     event(tid, "thread/tokenUsage/updated", tokenUsage={"last": {"inputTokens": 30, "outputTokens": 4, "cachedInputTokens": 20,
                                                                   "reasoningOutputTokens": 1, "totalTokens": 900},
                                                          "total": {}, "modelContextWindow": 258400})

@@ -8,6 +8,7 @@ import { visit } from 'unist-util-visit'
 import type { Root, Text, PhrasingContent } from 'mdast'
 import { api, type NoteIndex } from '../api'
 import { resolveNote, noteSection } from '../noteLinks'
+import { nodeText } from '../clipboard'
 import 'katex/dist/katex.min.css'
 
 const MermaidView = lazy(() => import('./MermaidView'))
@@ -102,7 +103,7 @@ export default function NoteMarkdown(props: Props) {
         pre: ({ node, children }) => {
           const code = node?.children[0]
           if (code?.type === 'element' && Array.isArray(code.properties.className) && code.properties.className.includes('language-mermaid')) {
-            const text = code.children.map((child) => child.type === 'text' ? child.value : '').join('')
+            const text = nodeText(code)
             return <Suspense fallback={<p>図を読み込み中…</p>}><MermaidView text={text} /></Suspense>
           }
           return <pre>{children}</pre>
