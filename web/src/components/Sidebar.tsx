@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FileText, Folder, FolderMinus, GitBranch, KeyRound, LogOut, MoreHorizontal, Pencil,
-  Pin, PinOff, Plus, RefreshCw, Search, Settings, Timer, Trash2, X,
+  PanelLeftClose, Pin, PinOff, Plus, RefreshCw, Search, Settings, Timer, Trash2, X,
 } from 'lucide-react'
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
 import PasskeyDialog from './PasskeyDialog'
@@ -87,6 +87,9 @@ type Props = {
   includeHidden: boolean
   open: boolean
   onClose: () => void
+  /** Wide screens: the sidebar is hidden, and onCollapse hides it */
+  collapsed: boolean
+  onCollapse: () => void
   onToggleHidden: () => void
   onSelect: (id: string | null) => void
   onNew: (draft: Draft) => void
@@ -212,7 +215,7 @@ export default function Sidebar(props: Props) {
       <aside
         className={`fixed inset-y-0 left-0 z-30 flex w-72 flex-col border-r border-border bg-surface transition-transform md:static md:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
-        }`}
+        } ${props.collapsed ? 'md:hidden' : ''}`}
       >
         <div className="flex items-center gap-2 p-3">
           <button
@@ -231,6 +234,9 @@ export default function Sidebar(props: Props) {
           </button>
           <button onClick={onClose} className="rounded-lg p-2 text-muted md:hidden" aria-label="閉じる">
             <X className="size-4" aria-hidden />
+          </button>
+          <button onClick={props.onCollapse} className="hidden rounded-lg p-2 text-muted hover:text-fg md:block" aria-label="サイドバーを隠す" title="サイドバーを隠す">
+            <PanelLeftClose className="size-4" aria-hidden />
           </button>
         </div>
         {props.onOpenDocs && <div className="px-3 pb-2">

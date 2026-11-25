@@ -80,6 +80,8 @@ type Props = {
   onProjectsChanged: () => void
   onRefreshExecutors: () => void
   onOpenMenu: () => void
+  /** The sidebar is hidden on wide screens: the menu button shows there too, to bring it back */
+  sidebarHidden?: boolean
   onSelect: (id: string | null) => void
   onChanged: () => void
   onRunFinished: () => void
@@ -435,7 +437,8 @@ export default function ChatView(props: Props) {
     <main className="flex min-w-0 flex-1 flex-col">
       <header className="border-b border-border">
         <div className="flex items-center gap-2 px-3 py-2">
-          <button onClick={props.onOpenMenu} className="rounded-lg p-1.5 text-muted md:hidden" aria-label="会話一覧">
+          <button onClick={props.onOpenMenu} className={`rounded-lg p-1.5 text-muted hover:text-fg ${props.sidebarHidden ? '' : 'md:hidden'}`}
+            aria-label="会話一覧" title={props.sidebarHidden ? 'サイドバーを表示' : undefined}>
             <Menu className="size-5" aria-hidden />
           </button>
           <h1 className="min-w-0 truncate text-sm font-medium">{detail?.title || (mode === 'code' ? '新しいCode' : '新しいチャット')}</h1>

@@ -31,9 +31,9 @@ const folderOf = (path: string) => path.includes('/') ? path.slice(0, path.lastI
 const inside = (path: string, folder: string) => path.startsWith(`${folder}/`)
 const sizeText = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
 
-export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, onError }: {
+export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, sidebarHidden = false, onError }: {
   projects: ProjectList | null; canEdit: boolean; canCompile: boolean
-  onOpenMenu: () => void; onError: (error: unknown) => void
+  onOpenMenu: () => void; sidebarHidden?: boolean; onError: (error: unknown) => void
 }) {
   const [project, setProject] = useState<string | null>(() => remembered().project ?? null)
   const [path, setPath] = useState<string | null>(() => remembered().path ?? null)
@@ -305,7 +305,8 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, on
 
   return <main className="flex min-w-0 flex-1 flex-col">
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-      <button onClick={onOpenMenu} className="rounded-lg p-1.5 text-muted md:hidden" aria-label="会話一覧"><Menu className="size-5" aria-hidden /></button>
+      <button onClick={onOpenMenu} className={`rounded-lg p-1.5 text-muted hover:text-fg ${sidebarHidden ? '' : 'md:hidden'}`}
+        aria-label="会話一覧" title={sidebarHidden ? 'サイドバーを表示' : undefined}><Menu className="size-5" aria-hidden /></button>
       <button onClick={() => setTreeOpen((value) => !value)} aria-pressed={treeOpen} aria-label="ファイル一覧" title="ファイル一覧"
         className={`rounded-lg p-1.5 ${treeOpen ? 'bg-raised text-fg' : 'text-muted hover:text-fg'}`}><FolderTree className="size-5" aria-hidden /></button>
       <h1 className="hidden text-sm font-medium sm:block">Docs</h1>

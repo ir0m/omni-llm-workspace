@@ -13,6 +13,14 @@ function idFromHash(): string | null {
 
 const docsFromHash = () => window.location.hash === '#/docs'
 
+// Wide screens can hide the sidebar; remembered in this browser
+const COLLAPSED = 'omni.sidebarCollapsed'
+const wide = () => window.matchMedia('(min-width: 768px)').matches
+
+function rememberedCollapsed(): boolean {
+  try { return localStorage.getItem(COLLAPSED) === 'true' } catch { return false }
+}
+
 const BLANK: Draft = { temporary: false, mode: 'chat', project: null }
 
 // Errors from loads the screen starts by itself (reload, focus) stay closed for a day once closed,
@@ -43,6 +51,13 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [projects, setProjects] = useState<ProjectList | null>(null)
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(rememberedCollapsed)
+  const collapse = useCallback((value: boolean) => {
+    setCollapsed(value)
+    try { localStorage.setItem(COLLAPSED, String(value)) } catch { /* storage disabled */ }
+  }, [])
+  // The header's menu button: the drawer on phones, showing the hidden sidebar on wide screens
+  const openMenu = useCallback(() => { if (wide()) collapse(false); else setDrawerOpen(true) }, [collapse])
   const [draft, setDraft] = useState<Draft>(BLANK)
   const [error, setError] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState(false)
@@ -175,6 +190,8 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         includeHidden={includeHidden}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
+        collapsed={collapsed}
+        onCollapse={() => collapse(true)}
         onToggleHidden={() => setIncludeHidden((value) => !value)}
         onSelect={select}
         onNew={startNew}
@@ -191,7 +208,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
       {settingsOpen && <SettingsDialog executors={executors} onClose={() => setSettingsOpen(false)} onChanged={settingsChanged}
         onDiscover={() => discover(true)} onDeletedAll={() => { select(null); refresh() }} />}
       {docsOpened && <div className={docs ? 'flex min-w-0 flex-1' : 'hidden'}>
-        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} onOpenMenu={() => setDrawerOpen(true)} onError={handle} /></Suspense>
+        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} onOpenMenu={openMenu} sidebarHidden={collapsed} onError={handle} /></Suspense>
       </div>}
       <div className={docs ? 'hidden' : 'flex min-w-0 flex-1'}>
       <ChatView
@@ -204,7 +221,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         config={config}
         onProjectsChanged={loadProjects}
         onRefreshExecutors={() => loadExecutors(true)}
-        onOpenMenu={() => setDrawerOpen(true)}
+        onOpenMenu={openMenu} sidebarHidden={collapsed}
         onSelect={select}
         onChanged={refresh}
         onRunFinished={() => loadExecutors(false)}
