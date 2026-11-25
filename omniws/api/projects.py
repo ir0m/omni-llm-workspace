@@ -151,8 +151,11 @@ async def move_file(name: str, body: MoveFile, request: Request):
 @router.get("/{name:path}/image")
 async def read_image(name: str, request: Request, path: str = Query(max_length=4096)):
     data, media_type = await browse(request, name, "image", path)
+    # SVG is a document: its own styles and embedded (data:) images may load, scripts and anything remote never do
+    policy = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
+              if media_type == "image/svg+xml" else "default-src 'none'; sandbox")
     return Response(data, media_type=media_type, headers={"Cache-Control": "no-store",
-                    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
+                    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": policy})
 
 
 PDF_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",

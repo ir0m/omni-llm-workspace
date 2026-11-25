@@ -111,3 +111,10 @@ body {
   .print-slide { width: 1280px; height: 720px; break-after: page; break-inside: avoid; print-color-adjust: exact; }
   .print-slide:last-child { break-after: auto; }
 }
+
+/* Behind images, so transparent parts are visible in both themes */
+.checkerboard {
+  background-color: var(--color-bg);
+  background-image: conic-gradient(var(--color-raised) 25%, transparent 0 50%, var(--color-raised) 0 75%, transparent 0);
+  background-size: 16px 16px;
+}

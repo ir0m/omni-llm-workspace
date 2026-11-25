@@ -7,6 +7,7 @@ import difflib
 import errno
 import hashlib
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -20,7 +21,8 @@ from .projects import ProjectError, is_project, project_path
 
 TEXT_LIMIT = 256 * 1024
 EDIT_LIMIT = 2 * 1024 * 1024  # the largest text file the editor loads and saves
-IMAGE_LIMIT = 8 * 1024 * 1024
+IMAGE_LIMIT = 32 * 1024 * 1024  # photos from phones and cameras are often over 8 MiB
+SVG_EXTENSIONS = (".svg",)
 PDF_LIMIT = 64 * 1024 * 1024
 GIT_LIMIT = 2 * 1024 * 1024
 PATCH_LIMIT = 512 * 1024
@@ -134,6 +136,7 @@ class ProjectFiles:
 
     @staticmethod
     def image_type(data: bytes) -> str | None:
+        """Raster formats browsers show, by their signature (the name is never trusted)."""
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image/png"
         if data.startswith(b"\xff\xd8\xff"):
@@ -142,7 +145,24 @@ class ProjectFiles:
             return "image/gif"
         if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
             return "image/webp"
+        if data[4:8] == b"ftyp" and data[8:12] in (b"avif", b"avis"):
+            return "image/avif"
+        # BMP: "BM", then a DIB header of a known size, so a text file starting with "BM" stays text
+        if data.startswith(b"BM") and len(data) >= 18 and int.from_bytes(data[14:18], "little") in (12, 40, 52, 56, 64, 108, 124):
+            return "image/bmp"
+        if data.startswith(b"\x00\x00\x01\x00") and len(data) >= 6 and data[4:6] != b"\x00\x00":
+            return "image/x-icon"
         return None
+
+    @staticmethod
+    def is_svg(data: bytes) -> bool:
+        """An SVG document: XML whose root element is <svg> (after an optional declaration, comments, doctype)."""
+        try:
+            head = data[:8192].decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return False
+        head = re.sub(r"^\s*(<\?xml[^>]*\?>\s*)?((<!--.*?-->|<!DOCTYPE[^>]*>)\s*)*", "", head, flags=re.S | re.I)
+        return head.startswith("<svg") and (len(head) == 4 or head[4] in " \t\r\n>/")
 
     def file(self, path: str, limit: int = TEXT_LIMIT) -> dict:
         with self.opened(path) as (descriptor, info):
@@ -340,14 +360,18 @@ class ProjectFiles:
         return {"path": path}
 
     def image(self, path: str) -> tuple[bytes, str]:
+        """An image to show. SVG is served too; the route sends it with a sandboxing CSP, so a script inside
+        never runs even when the image is opened on its own."""
         with self.opened(path) as (descriptor, info):
             if info.st_size > IMAGE_LIMIT:
-                raise FileError(413, "画像は8 MiBまで表示できます")
+                raise FileError(413, "画像は32 MiBまで表示できます")
             with os.fdopen(os.dup(descriptor), "rb") as stream:
                 data = stream.read(IMAGE_LIMIT + 1)
-        media_type = self.image_type(data)
         if len(data) > IMAGE_LIMIT:
-            raise FileError(413, "画像は8 MiBまで表示できます")
+            raise FileError(413, "画像は32 MiBまで表示できます")
+        media_type = self.image_type(data)
+        if not media_type and path.lower().endswith(SVG_EXTENSIONS) and self.is_svg(data):
+            media_type = "image/svg+xml"
         if not media_type:
             raise FileError(415, "この画像形式は表示できません")
         return data, media_type

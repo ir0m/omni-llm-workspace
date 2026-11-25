@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Columns2, Eye, Play, Presentation, FilePlus, FolderPlus, FolderTree, Menu, Pencil, RefreshCw, Save, SquarePen, Trash2 } from 'lucide-react'
 import { api, ApiError, type CompileResult, type NoteIndex, type ProjectList } from '../api'
 import NoteMarkdown from './NoteMarkdown'
@@ -10,6 +10,7 @@ const Editor = lazy(() => import('./Editor'))
 const PdfView = lazy(() => import('./PdfView'))
 const Presenter = lazy(() => import('./Presenter'))
 const MarpPreview = lazy(() => import('./MarpPreview'))
+const ImageView = lazy(() => import('./ImageView'))
 
 const SAVED = 'omni.docs'
 type View = 'edit' | 'split' | 'preview'
@@ -28,6 +29,7 @@ function remembered(): { project?: string; path?: string; showHidden?: boolean }
 
 const isCompiled = (path: string) => /\.(typ|tex)$/i.test(path)
 const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path)
+const isSvg = (path: string) => /\.svg$/i.test(path)
 const folderOf = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : ''
 const inside = (path: string, folder: string) => path.startsWith(`${folder}/`)
 const sizeText = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
@@ -296,7 +298,12 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
   const compiled = !!loaded && canCompile && isCompiled(loaded.path)
   // A result belongs to the document it was built from: never show one file's PDF or errors beside another
   const build = built && loaded && built.key === `${project}:${loaded.path}` ? built.result : null
-  const hasPreview = !!loaded && (isMarkdown(loaded.path) || compiled)
+  const svg = !!loaded && isSvg(loaded.path)
+  // A blob URL of the SVG being edited; an <img> never runs scripts inside it
+  const svgUrl = useMemo(() => svg && !loaded?.truncated ? URL.createObjectURL(new Blob([preview], { type: 'image/svg+xml' })) : null,
+    [svg, loaded?.truncated, preview])
+  useEffect(() => () => { if (svgUrl) URL.revokeObjectURL(svgUrl) }, [svgUrl])
+  const hasPreview = !!loaded && (isMarkdown(loaded.path) || compiled || svg)
   const shown: View = hasPreview ? view : 'edit'
   const marp = !!loaded && isMarkdown(loaded.path) && isMarp(preview)
   // What can be presented: a PDF file, the PDF built from the open document, or saved Marp slides
@@ -419,10 +426,10 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
         {!path && <p className="p-4 text-sm text-muted">ファイルを選択すると、ここで編集できます</p>}
         {path && loading && !loaded && <p className="p-4 text-sm text-muted">読み込み中…</p>}
         {other && (other.kind === 'image' && !other.tooLarge
-          ? <div className="flex-1 overflow-auto"><img src={api.imageUrl(project!, other.path, version)} alt={other.path} className="mx-auto max-w-full p-3" /></div>
+          ? <Suspense fallback={<p className="p-4 text-sm text-muted">読み込み中…</p>}><ImageView src={api.imageUrl(project!, other.path, version)} name={other.path} /></Suspense>
           : other.kind === 'pdf' && !other.tooLarge
           ? <div className="flex-1 overflow-auto bg-surface"><Suspense fallback={<p className="p-4 text-sm text-muted">読み込み中…</p>}><PdfView url={api.pdfUrl(project!, other.path, version)} /></Suspense></div>
-          : <p className="p-4 text-sm text-muted">{other.kind === 'image' ? '画像は8 MiBまで表示できます' : other.kind === 'pdf' ? 'PDFは64 MiBまで表示できます' : 'この形式は表示・編集できません'}</p>)}
+          : <p className="p-4 text-sm text-muted">{other.kind === 'image' ? '画像は32 MiBまで表示できます' : other.kind === 'pdf' ? 'PDFは64 MiBまで表示できます' : 'この形式は表示・編集できません'}</p>)}
         {loaded && <>
           <div className={`min-h-0 min-w-0 flex-1 flex-col ${shown === 'preview' ? 'hidden' : 'flex'}`}>
             {loaded.truncated && <p className="border-b border-border px-3 py-1.5 text-xs text-muted">2 MiBを超えるため先頭だけを表示しています。このファイルは編集できません。</p>}
@@ -434,8 +441,11 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
           {hasPreview && shown === 'split' && <Resizer label="プレビューの幅" edge="left" width={previewSize.width} limits={PREVIEW}
             others={sideWidth + (treeOpen ? tree.width : 0)} onChange={previewSize.setWidth} onReset={previewSize.reset} className="hidden lg:block" />}
           {hasPreview && <div aria-label="プレビュー" tabIndex={0} style={widthVar('preview', previewSize.width)}
-            className={`min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-border lg:border-l ${compiled ? 'bg-surface' : 'p-4'} ${shown === 'edit' ? 'hidden' : shown === 'split' ? 'hidden lg:flex lg:w-[var(--preview-w)] lg:flex-none' : 'flex'}`}>
-            {compiled ? <>
+            className={`min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-border lg:border-l ${compiled ? 'bg-surface' : svg ? '' : 'p-4'} ${shown === 'edit' ? 'hidden' : shown === 'split' ? 'hidden lg:flex lg:w-[var(--preview-w)] lg:flex-none' : 'flex'}`}>
+            {svg ? <Suspense fallback={<p className="p-4 text-sm text-muted">読み込み中…</p>}>
+              {/* The editor's text, so edits show before saving; a truncated file is shown as saved */}
+              <ImageView src={loaded.truncated ? api.imageUrl(project!, loaded.path, version) : svgUrl ?? ''} name={loaded.path} vector openable={loaded.truncated} />
+            </Suspense> : compiled ? <>
               <div className="sticky top-0 z-10 border-b border-border bg-bg text-sm">
                 <div className="flex items-center gap-2 px-3 py-1.5">
                   <span role="status" className={`min-w-0 flex-1 truncate ${build && !build.ok ? 'text-danger' : 'text-muted'}`}>

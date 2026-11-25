@@ -129,16 +129,27 @@ def test_file_previews_are_bounded_and_html_is_only_text(client, project):
     assert client.get("/api/projects/app/file", params={"path": "missing"}).status_code == 404
 
 
-def test_images_are_authenticated_bounded_and_do_not_serve_svg_as_active_content(client, project):
+def test_images_are_authenticated_bounded_and_serve_svg_only_sandboxed(client, project):
     png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7l8AAAAASUVORK5CYII=")
     (project / "image.png").write_bytes(png)
     assert client.get("/api/projects/app/file", params={"path": "image.png"}).json()["kind"] == "image"
     response = client.get("/api/projects/app/image", params={"path": "image.png"})
     assert response.content == png and response.headers["content-type"] == "image/png"
     assert response.headers["x-content-type-options"] == "nosniff" and response.headers["cache-control"] == "no-store"
-    (project / "image.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>test()</script></svg>')
-    assert client.get("/api/projects/app/image", params={"path": "image.svg"}).status_code == 415
-    assert client.get("/api/projects/app/file", params={"path": "image.svg"}).json()["kind"] == "text"
+    (project / "image.svg").write_text('<?xml version="1.0"?>\n<!-- logo -->\n<svg xmlns="http://www.w3.org/2000/svg">'
+                                       '<style>rect{fill:red}</style><script>test()</script></svg>')
+    svg = client.get("/api/projects/app/image", params={"path": "image.svg"})
+    assert svg.status_code == 200 and svg.headers["content-type"] == "image/svg+xml"
+    policy = svg.headers["content-security-policy"]
+    # Opened on its own, it is sandboxed: no script source, nothing remote; its own styles still apply
+    assert "sandbox" in policy and "script-src" not in policy and "default-src 'none'" in policy and "style-src 'unsafe-inline'" in policy
+    assert svg.headers["x-content-type-options"] == "nosniff"
+    assert client.get("/api/projects/app/file", params={"path": "image.svg"}).json()["kind"] == "text"  # still editable
+    # Only real SVG documents, and only by that name
+    (project / "page.svg").write_text("<html><script>test()</script></html>")
+    (project / "drawing.txt").write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    for path in ("page.svg", "drawing.txt"):
+        assert client.get("/api/projects/app/image", params={"path": path}).status_code == 415
     with (project / "huge.png").open("wb") as file:
         file.write(png)
         file.truncate(IMAGE_LIMIT + 1)
@@ -381,3 +392,20 @@ def test_folder_summary_rules(client, editable, project):
     assert client.get("/api/projects/app/folder", params={"path": ""}).status_code == 400  # never the project itself
     client.app.state.settings.omni_allow_file_edit = False
     assert client.get("/api/projects/app/folder", params={"path": "src"}).status_code == 403
+
+
+@pytest.mark.parametrize("name,data,media_type", [
+    ("photo.avif", b"\0\0\0\x1cftypavif" + b"\0" * 32, "image/avif"),
+    ("old.bmp", b"BM" + b"\0" * 12 + (40).to_bytes(4, "little") + b"\0" * 40, "image/bmp"),
+    ("favicon.ico", b"\0\0\x01\0\x01\0" + b"\0" * 32, "image/x-icon"),
+])
+def test_more_image_formats_are_shown(client, project, name, data, media_type):
+    (project / name).write_bytes(data)
+    assert client.get("/api/projects/app/file", params={"path": name}).json()["kind"] == "image"
+    response = client.get("/api/projects/app/image", params={"path": name})
+    assert response.status_code == 200 and response.headers["content-type"] == media_type
+
+
+def test_text_starting_like_an_image_stays_text(client, project):
+    (project / "notes.txt").write_text("BMW のメモ\n")
+    assert client.get("/api/projects/app/file", params={"path": "notes.txt"}).json()["kind"] == "text"

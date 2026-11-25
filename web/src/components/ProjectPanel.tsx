@@ -226,7 +226,7 @@ export default function ProjectPanel({ project, revision, capabilities, others =
           <pre className="min-w-full w-max p-3 font-mono text-xs leading-5"><code>{preview.text || '（空のファイル）'}</code></pre>
         </>}
         {preview?.kind === 'image' && (preview.too_large
-          ? <p className="p-4 text-sm text-muted">画像は8 MiBまで表示できます</p>
+          ? <p className="p-4 text-sm text-muted">画像は32 MiBまで表示できます</p>
           : <img key={`${preview.path}-${version}`} src={api.imageUrl(project, preview.path, version)} alt={preview.path}
               onError={() => setError('画像を読み込めませんでした。更新して再度お試しください')}
               className="mx-auto max-w-full p-3" />)}
