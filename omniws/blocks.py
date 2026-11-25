@@ -47,6 +47,9 @@ def apply(blocks: list[dict[str, Any]], update: Update) -> None:
             block["entries"] = update.get("entries", [])
     elif kind == "handover":
         blocks.append({"type": "handover", "agent": update.get("agent"), "count": update.get("count", 0)})
+    elif kind == "attachment" and isinstance(update.get("attachment"), dict):
+        # A file the model made (a generated image), stored like an attachment
+        blocks.append({**update["attachment"], "type": "attachment"})
 
 
 def merge_usage(usage: dict[str, Any] | None, update: Update) -> dict[str, Any]:

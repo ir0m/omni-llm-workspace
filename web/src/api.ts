@@ -20,7 +20,8 @@ export type AttachmentInfo = { id: string; name: string; media_type: string; siz
 
 export type Block =
   | { type: 'text' | 'thinking' | 'user_input'; text: string }
-  | ({ type: 'attachment' } & AttachmentInfo)
+  // In a reply: an image the model generated, with the prompt it used
+  | ({ type: 'attachment'; generated?: boolean; prompt?: string } & AttachmentInfo)
   | ToolCall
   | { type: 'plan'; entries: PlanEntry[] }
   | { type: 'handover'; agent: string; count: number }

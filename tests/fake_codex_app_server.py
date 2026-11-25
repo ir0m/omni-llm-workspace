@@ -82,6 +82,12 @@ def run_turn(request_id, params):
     event(tid, "item/agentMessage/delta", itemId="m1", delta="受け取った: ")
     event(tid, "item/agentMessage/delta", itemId="m1", delta=params["input"][0]["text"])
     event(tid, "item/completed", item={"type": "agentMessage", "id": "m1", "text": "…"})
+    if params["input"][0]["text"] == "画像":  # an image generation with the bytes inline
+        import base64
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 32).decode()
+        event(tid, "item/started", item={"type": "imageGeneration", "id": "ig1", "status": "in_progress"})
+        event(tid, "item/completed", item={"type": "imageGeneration", "id": "ig1", "status": "completed",
+                                           "revisedPrompt": "夕焼けの猫", "result": png})
     if params["input"][0]["text"] == "二通":  # a second message right after the first, no tool in between
         event(tid, "item/agentMessage/delta", itemId="m2", delta="## 見出し")
         event(tid, "item/completed", item={"type": "agentMessage", "id": "m2", "text": "## 見出し"})

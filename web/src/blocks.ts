@@ -24,6 +24,9 @@ export function applyUpdate(blocks: Block[], update: Update): Block[] {
     for (const field of TOOL_FIELDS) if (update[field] !== undefined && update[field] !== null) merged[field] = update[field]
     if (index >= 0) next[index] = merged as Block
     else next.push(merged as Block)
+  } else if (kind === 'attachment' && update.attachment) {
+    // A file the model made (a generated image), stored like an attachment
+    next.push({ ...update.attachment, type: 'attachment' })
   } else if (kind === 'plan') {
     const index = next.findIndex((block) => block.type === 'plan')
     const block: Block = { type: 'plan', entries: update.entries ?? [] }

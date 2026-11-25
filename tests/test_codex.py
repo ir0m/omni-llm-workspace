@@ -202,3 +202,40 @@ def test_back_to_back_messages_stay_separate_paragraphs(codex_client):
     assert follow(client, started["run_id"])[-1][1]["status"] == "complete"
     reply = client.get(f"/api/conversations/{conversation['id']}").json()["messages"][-1]
     assert reply["content"][-1] == {"type": "text", "text": "受け取った: 二通\n\n## 見出し"}
+
+
+def test_generated_image_is_stored_and_shown_in_the_reply(codex_client):
+    client = codex_client
+    conversation = client.post("/api/conversations", json={}).json()
+    started = client.post(f"/api/conversations/{conversation['id']}/messages",
+                          json={"text": "画像", "provider": "codex", "model": "gpt-b"}).json()
+    assert follow(client, started["run_id"])[-1][1]["status"] == "complete"
+    reply = client.get(f"/api/conversations/{conversation['id']}").json()["messages"][-1]
+    card = next(block for block in reply["content"] if block["type"] == "tool_call")
+    assert card["title"] == "画像を生成" and card["status"] == "completed"
+    image = next(block for block in reply["content"] if block["type"] == "attachment")
+    assert image["generated"] is True and image["kind"] == "image" and image["media_type"] == "image/png"
+    assert image["prompt"] == "夕焼けの猫" and image["name"].endswith(".png")
+    served = client.get(f"/api/attachments/{image['id']}")
+    assert served.status_code == 200 and served.content.startswith(b"\x89PNG")
+
+
+def test_generated_image_files_are_read_only_from_codex_folder(tmp_path, monkeypatch):
+    from .conftest import make_settings
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent = CodexAgent(make_settings(tmp_path))
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+    folder = tmp_path / ".codex" / "generated_images" / "thread"
+    folder.mkdir(parents=True)
+    (folder / "a.png").write_bytes(png)
+    stored = agent.generated_image({"savedPath": str(folder / "a.png"), "revisedPrompt": "p"})
+    assert stored and stored["kind"] == "image" and stored["prompt"] == "p"
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(png)
+    assert agent.generated_image({"savedPath": str(secret)}) is None  # outside Codex's folder
+    (folder / "escape.png").symlink_to(secret)
+    assert agent.generated_image({"savedPath": str(folder / "escape.png")}) is None  # a link pointing out
+    (folder / "note.png").write_bytes(b"not an image")
+    assert agent.generated_image({"savedPath": str(folder / "note.png")}) is None
+    assert agent.generated_image({"result": "!!not base64!!"}) is None
+    assert agent.generated_image({"type": "imageGeneration"}) is None

@@ -22,3 +22,11 @@ def test_history_and_handover_keep_headings_after_tool_calls():
                 Message(id="a", seq=2, role="assistant", status="complete", content=blocks())]
     assert chat_history(messages)[1]["content"] == "Web検索します。\n\n## 結果\n- 晴れ"
     assert "Web検索します。\n\n## 結果" in describe_part(messages[1], "assistant", blocks())
+
+
+def test_handover_mentions_generated_images():
+    image = {"type": "attachment", "id": "0" * 32, "name": "generated.png", "media_type": "image/png", "size": 1,
+             "kind": "image", "generated": True, "prompt": "夕焼けの猫"}
+    message = Message(id="a", seq=2, role="assistant", status="complete", content=[{"type": "text", "text": "作りました"}, image])
+    text = describe_part(message, "assistant", message.content)
+    assert "作りました" in text and "[生成した画像: generated.png]（指示: 夕焼けの猫）" in text

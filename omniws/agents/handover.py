@@ -32,11 +32,14 @@ def describe_part(message: Message, role: str, content: list[dict]) -> str:
         return "\n".join(["[user]", *([text] if text else []), *files])
     who = " / ".join(part for part in (message.agent, message.model) if part)
     tools = [tool_summary(block) for block in content if block.get("type") == "tool_call"]
+    images = [f"[生成した画像: {block.get('name')}]" + (f"（指示: {block['prompt'][:300]}）" if block.get("prompt") else "")
+              for block in content if block.get("type") == "attachment" and block.get("generated")]
     lines = [f"[assistant: {who}]" if who else "[assistant]"]
     if tools:
         lines.append("操作:\n" + "\n".join(tools))
     if text:
         lines.append(text)
+    lines.extend(images)
     return "\n".join(lines)
 
 

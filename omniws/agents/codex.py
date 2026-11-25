@@ -8,6 +8,8 @@ app's policy decides. Earlier turns another model wrote are handed over with `th
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import os
 import shlex
@@ -17,7 +19,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from .. import __version__
+from .. import __version__, attachments
 from ..config import Settings
 from ..events import Update, message_chunk, thought_chunk, usage_update
 from ..providers.base import ModelInfo, ProviderError
@@ -115,6 +117,14 @@ def item_update(kind: str, item: dict[str, Any], cwd: Path, output: str | None =
         base.update(kind="other", title=f"{item.get('server')}.{item.get('tool')}")
     elif item_type == "webSearch":
         base.update(kind="fetch", title=f"Web検索: {item.get('query') or ''}")
+    elif item_type == "imageGeneration":
+        failure = item.get("failure") or {}
+        base.update(kind="other", title="画像を生成", note=(item.get("revisedPrompt") or None))
+        if failure:
+            base.update(status="failed", note="画像生成の利用上限に達しました" if failure.get("type") == "usageLimitExceeded"
+                        else "画像を生成できませんでした")
+        elif kind == "tool_call_update" and base["status"] == "in_progress":
+            base["status"] = "completed"  # the item is done; its own status values vary by version
     else:
         return None
     return {key: value for key, value in base.items() if value is not None}
@@ -306,6 +316,36 @@ class CodexAgent:
             raise ProviderError("bad_request", "このセッションの履歴を完全に取得できませんでした")
         return codex_history(thread, cwd)
 
+    def generated_image(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        """The image an imageGeneration item made, stored as an attachment of the reply.
+
+        The bytes come inline (`result`, base64) or as the file Codex saved. Only files inside Codex's own
+        generated_images folder are read, so a reply can never make this server read anything else.
+        """
+        data: bytes | None = None
+        result = item.get("result")
+        if isinstance(result, str) and result:
+            encoded = result.split(",", 1)[1] if result.startswith("data:") else result
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                data = None
+        saved = item.get("savedPath")
+        if data is None and isinstance(saved, str) and saved:
+            folder = (Path(self.env()["HOME"]) / ".codex" / "generated_images").resolve()
+            try:
+                target = Path(saved).resolve()
+                if target.is_relative_to(folder) and target.is_file() and target.stat().st_size <= attachments.FILE_LIMIT:
+                    data = target.read_bytes()
+            except OSError:
+                data = None
+        if not data:
+            return None
+        try:
+            return attachments.save_generated(self.settings.omni_data_dir, data, item.get("revisedPrompt"))
+        except attachments.AttachmentError:
+            return None
+
     def thread_settings(self, turn: Turn) -> dict[str, Any]:
         config: dict[str, Any] = {}
         if turn.mode == "chat":
@@ -477,6 +517,10 @@ class CodexAgent:
                     if update:
                         text_from = None  # a tool card starts a new block
                         yield update
+                    if item.get("type") == "imageGeneration" and method == "item/completed" and not item.get("failure"):
+                        image = self.generated_image(item)
+                        if image:
+                            yield {"sessionUpdate": "attachment", "attachment": image}
                 elif method == "item/commandExecution/outputDelta":
                     item_id = data.get("itemId", "")
                     outputs[item_id] = clip_tail(outputs.get(item_id, "") + data.get("delta", ""), LIVE_OUTPUT)

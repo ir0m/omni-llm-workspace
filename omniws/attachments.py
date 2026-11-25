@@ -84,14 +84,16 @@ def classify(data: bytes, name: str) -> tuple[str, str]:
     return "file", "application/octet-stream"
 
 
-def save(data_dir: Path, data: bytes, name: str | None) -> dict[str, Any]:
+def save(data_dir: Path, data: bytes, name: str | None, generated: bool = False) -> dict[str, Any]:
+    """`generated`: an image a model made. It is only shown and downloaded, never sent to a provider as input,
+    so the per-image input limit does not apply."""
     if not data:
         raise AttachmentError(400, "空のファイルは添付できません")
     if len(data) > FILE_LIMIT:
         raise AttachmentError(413, "添付できるファイルは20 MiBまでです")
     name = clean_name(name)
     kind, media_type = classify(data, name)
-    if kind == "image" and len(data) > IMAGE_LIMIT:
+    if kind == "image" and len(data) > IMAGE_LIMIT and not generated:
         raise AttachmentError(413, "画像は5 MiBまで添付できます")
     meta = {"id": secrets.token_hex(16), "name": name, "media_type": media_type, "size": len(data), "kind": kind,
             "created_at": int(time.time())}
@@ -129,6 +131,21 @@ def read(data_dir: Path, attachment_id: str) -> bytes:
 def block(item: dict[str, Any]) -> dict[str, Any]:
     """The reference a stored message keeps."""
     return {"type": "attachment", **{key: item[key] for key in ("id", "name", "media_type", "size", "kind")}}
+
+
+EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
+
+
+def save_generated(data_dir: Path, data: bytes, prompt: str | None = None) -> dict[str, Any]:
+    """An image a model generated, kept like an attachment of the reply (shown, downloadable, cleaned up with it)."""
+    media_type = image_type(data)
+    if media_type is None:
+        raise AttachmentError(415, "生成された画像の形式を認識できませんでした")
+    item = save(data_dir, data, f"generated-{time.strftime('%Y%m%d-%H%M%S')}.{EXTENSIONS[media_type]}", generated=True)
+    result = {**block(item), "generated": True}
+    if prompt:
+        result["prompt"] = prompt[:4000]
+    return result
 
 
 def resolve(data_dir: Path, ids: list[str]) -> list[dict[str, Any]]:

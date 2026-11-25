@@ -141,6 +141,8 @@ function pieces(blocks: Block[], live: boolean): Piece[] {
       out.push({ key: `plan-${index}`, node: <PlanSummary entries={block.entries} /> })
     } else if (block.type === 'text') {
       if (block.text) out.push({ key: `text-${index}`, node: <Markdown text={block.text} /> })
+    } else if (block.type === 'attachment') {
+      out.push({ key: `file-${block.id}`, node: <GeneratedFile file={block} /> })
     } else if (block.type === 'user_input') {
       out.push({ key: `input-${index}`, node: (
         <div className="flex flex-col items-end">
@@ -182,6 +184,30 @@ function pieces(blocks: Block[], live: boolean): Piece[] {
 }
 
 const KIND_LABEL: Record<AttachmentInfo['kind'], string> = { image: '画像', pdf: 'PDF', text: 'テキスト', file: 'ファイル' }
+
+/** A file in a reply, such as an image the model generated: shown in full width, opens and downloads. */
+function GeneratedFile({ file }: { file: AttachmentInfo & { prompt?: string } }) {
+  if (file.kind !== 'image') {
+    return <a href={attachmentUrl(file.id, true)} download={file.name}
+      className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 text-sm hover:bg-raised">
+      <FileIcon className="size-4 text-muted" aria-hidden />{file.name}<Download className="size-3.5 text-muted" aria-hidden />
+    </a>
+  }
+  return <figure className="max-w-xl">
+    <a href={attachmentUrl(file.id)} target="_blank" rel="noopener noreferrer" title="原寸で開く"
+      className="block overflow-hidden rounded-xl border border-border bg-surface">
+      <img src={attachmentUrl(file.id)} alt={file.prompt ? `生成した画像: ${file.prompt}` : '生成した画像'} loading="lazy"
+        className="max-h-[32rem] w-full object-contain" />
+    </a>
+    <figcaption className="mt-1 flex items-start gap-2 text-xs text-muted">
+      {file.prompt ? <details className="min-w-0 flex-1"><summary className="cursor-pointer select-none">生成に使った指示</summary>
+        <p className="mt-1 whitespace-pre-wrap break-words">{file.prompt}</p></details> : <span className="flex-1" />}
+      <a href={attachmentUrl(file.id, true)} download={file.name} className="flex shrink-0 items-center gap-1 hover:text-fg">
+        <Download className="size-3.5" aria-hidden />保存（{sizeLabel(file.size)}）
+      </a>
+    </figcaption>
+  </figure>
+}
 
 /** Files sent with a message: photos as thumbnails that open in full, everything else as a download. */
 function Attachments({ files }: { files: AttachmentInfo[] }) {
