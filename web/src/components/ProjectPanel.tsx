@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, File, Folder, Link, RefreshCw, X } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import WorktreePanel from './WorktreePanel'
+import { PANEL, Resizer, useWidth, widthVar } from '../resize'
 const TerminalPanel = lazy(() => import('./TerminalPanel'))
 import { api, type ChangeStage, type FileDiff, type FilePreview, type FileTree, type ProjectChanges } from '../api'
 
@@ -90,7 +91,8 @@ export function Tree(props: TreeProps) {
   </>
 }
 
-export default function ProjectPanel({ project, revision, capabilities, onChanged, onClose }: { project: string; revision: number; capabilities: string[]; onChanged: () => void; onClose: () => void }) {
+export default function ProjectPanel({ project, revision, capabilities, others = 0, onChanged, onClose }: { project: string; revision: number; capabilities: string[]; others?: number; onChanged: () => void; onClose: () => void }) {
+  const size = useWidth('panel', PANEL, others)
   const [tab, setTab] = useState<'files' | 'diff' | 'terminal' | 'worktrees'>('files')
   const [refresh, setRefresh] = useState(0)
   const version = revision + refresh
@@ -152,7 +154,10 @@ export default function ProjectPanel({ project, revision, capabilities, onChange
     return () => { cancelled = true }
   }, [tab, selected, change?.stage, project, version])
 
-  return <section ref={panel} role={mobile ? 'dialog' : 'complementary'} aria-modal={mobile ? true : undefined}
+  return <>
+  <Resizer label="ファイル・差分の幅" edge="left" width={size.width} limits={PANEL} others={others}
+    onChange={size.setWidth} onReset={size.reset} className="hidden lg:block" />
+  <section ref={panel} style={widthVar('panel', size.width)} role={mobile ? 'dialog' : 'complementary'} aria-modal={mobile ? true : undefined}
     aria-label={`${project} のファイル・差分`}
     onKeyDown={(event) => {
       if (event.key === 'Escape') { event.stopPropagation(); onClose() }
@@ -164,7 +169,7 @@ export default function ProjectPanel({ project, revision, capabilities, onChange
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
       }
     }}
-    className="fixed inset-0 z-40 flex min-h-0 min-w-0 flex-col bg-bg lg:static lg:z-auto lg:w-[min(40vw,36rem)] lg:shrink-0 lg:border-l lg:border-border">
+    className="fixed inset-0 z-40 flex min-h-0 min-w-0 flex-col bg-bg lg:static lg:z-auto lg:w-[var(--panel-w)] lg:shrink-0 lg:border-l lg:border-border">
     <div className="flex items-center gap-2 border-b border-border px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]">
       <span className="min-w-0 flex-1 truncate text-sm font-medium">{project}</span>
       <button onClick={() => setRefresh((value) => value + 1)} aria-label="ファイルと差分を更新" title="ファイルと差分を更新" className="rounded-lg p-2 text-muted hover:text-fg">
@@ -240,4 +245,5 @@ export default function ProjectPanel({ project, revision, capabilities, onChange
       </>}
     </div>
   </section>
+  </>
 }

@@ -4,6 +4,7 @@ import { api, ApiError, type CompileResult, type NoteIndex, type ProjectList } f
 import NoteMarkdown from './NoteMarkdown'
 import { Tree } from './ProjectPanel'
 import { isMarp, type DeckSpec } from '../deckSpec'
+import { PREVIEW, Resizer, TREE, useWidth, widthVar } from '../resize'
 
 const Editor = lazy(() => import('./Editor'))
 const PdfView = lazy(() => import('./PdfView'))
@@ -31,9 +32,9 @@ const folderOf = (path: string) => path.includes('/') ? path.slice(0, path.lastI
 const inside = (path: string, folder: string) => path.startsWith(`${folder}/`)
 const sizeText = (size: number) => size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`
 
-export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, sidebarHidden = false, onError }: {
+export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, sidebarHidden = false, sideWidth = 0, onError }: {
   projects: ProjectList | null; canEdit: boolean; canCompile: boolean
-  onOpenMenu: () => void; sidebarHidden?: boolean; onError: (error: unknown) => void
+  onOpenMenu: () => void; sidebarHidden?: boolean; sideWidth?: number; onError: (error: unknown) => void
 }) {
   const [project, setProject] = useState<string | null>(() => remembered().project ?? null)
   const [path, setPath] = useState<string | null>(() => remembered().path ?? null)
@@ -48,6 +49,9 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
   const [preview, setPreview] = useState('')
   const [view, setView] = useState<View>('split')
   const [treeOpen, setTreeOpen] = useState(true)
+  const tree = useWidth('tree', TREE, sideWidth)
+  // In split view the preview has the chosen width and the editor takes the rest
+  const previewSize = useWidth('preview', PREVIEW, sideWidth + (treeOpen ? tree.width : 0))
   const [version, setVersion] = useState(0)
   const [noteIndex, setNoteIndex] = useState<NoteIndex>({ notes: [], paths: [], backlinks: [], results: [], truncated: false })
   const [query, setQuery] = useState('')
@@ -355,8 +359,8 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
     </div>}
 
     <div className="flex min-h-0 flex-1">
-      {treeOpen && <aside aria-label="ファイル一覧"
-        className="flex w-full shrink-0 flex-col border-r border-border lg:w-64">
+      {treeOpen && <aside aria-label="ファイル一覧" style={widthVar('tree', tree.width)}
+        className="flex w-full shrink-0 flex-col border-r border-border lg:w-[var(--tree-w)]">
         {known ? <>
           <div className="flex items-center border-b border-border px-1">
             {canEdit && <>
@@ -409,6 +413,8 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
         </> : <p className="p-4 text-sm text-muted">{projects ? 'プロジェクトを選択してください' : '読み込み中…'}</p>}
       </aside>}
 
+      {treeOpen && <Resizer label="ファイル一覧の幅" edge="right" width={tree.width} limits={TREE} others={sideWidth}
+        onChange={tree.setWidth} onReset={tree.reset} className="hidden lg:block" />}
       <div className={`min-h-0 min-w-0 flex-1 ${treeOpen ? 'hidden lg:flex' : 'flex'}`}>
         {!path && <p className="p-4 text-sm text-muted">ファイルを選択すると、ここで編集できます</p>}
         {path && loading && !loaded && <p className="p-4 text-sm text-muted">読み込み中…</p>}
@@ -425,8 +431,10 @@ export default function DocsView({ projects, canEdit, canCompile, onOpenMenu, si
                 readOnly={!editable} jump={jump} notePaths={noteIndex.notes.filter(listed).map((note) => note.path)} onChange={changed} onSave={() => void save()} />
             </Suspense>
           </div>
-          {hasPreview && <div aria-label="プレビュー" tabIndex={0}
-            className={`min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-border lg:border-l ${compiled ? 'bg-surface' : 'p-4'} ${shown === 'edit' ? 'hidden' : shown === 'split' ? 'hidden lg:flex' : 'flex'}`}>
+          {hasPreview && shown === 'split' && <Resizer label="プレビューの幅" edge="left" width={previewSize.width} limits={PREVIEW}
+            others={sideWidth + (treeOpen ? tree.width : 0)} onChange={previewSize.setWidth} onReset={previewSize.reset} className="hidden lg:block" />}
+          {hasPreview && <div aria-label="プレビュー" tabIndex={0} style={widthVar('preview', previewSize.width)}
+            className={`min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-border lg:border-l ${compiled ? 'bg-surface' : 'p-4'} ${shown === 'edit' ? 'hidden' : shown === 'split' ? 'hidden lg:flex lg:w-[var(--preview-w)] lg:flex-none' : 'flex'}`}>
             {compiled ? <>
               <div className="sticky top-0 z-10 border-b border-border bg-bg text-sm">
                 <div className="flex items-center gap-2 px-3 py-1.5">

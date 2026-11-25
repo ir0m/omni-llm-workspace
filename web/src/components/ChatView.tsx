@@ -82,6 +82,8 @@ type Props = {
   onOpenMenu: () => void
   /** The sidebar is hidden on wide screens: the menu button shows there too, to bring it back */
   sidebarHidden?: boolean
+  /** Width of the left sidebar on wide screens (0 when hidden), so the right panel leaves the chat room */
+  sideWidth?: number
   onSelect: (id: string | null) => void
   onChanged: () => void
   onRunFinished: () => void
@@ -651,7 +653,7 @@ export default function ChatView(props: Props) {
         <UsageMeter executor={executor} />
       </div>
     </main>
-    {panelOpen && mode === 'code' && project && <ProjectPanel key={project} project={project} revision={panelRevision} capabilities={config?.capabilities ?? []} onChanged={() => { props.onProjectsChanged(); onChanged() }} onClose={() => setPanelOpen(false)} />}
+    {panelOpen && mode === 'code' && project && <ProjectPanel key={project} project={project} revision={panelRevision} others={props.sideWidth ?? 0} capabilities={config?.capabilities ?? []} onChanged={() => { props.onProjectsChanged(); onChanged() }} onClose={() => setPanelOpen(false)} />}
     </div>
   )
 }

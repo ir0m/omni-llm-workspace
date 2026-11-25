@@ -5,6 +5,7 @@ const DocsView = lazy(() => import('./DocsView'))
 import { useBackClose } from '../backClose'
 import SettingsDialog from './SettingsDialog'
 import Sidebar from './Sidebar'
+import { SIDEBAR, useWidth } from '../resize'
 
 function idFromHash(): string | null {
   const match = window.location.hash.match(/^#\/c\/([\w-]+)$/)
@@ -52,6 +53,9 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(rememberedCollapsed)
+  const sidebar = useWidth('sidebar', SIDEBAR)
+  // What the left sidebar takes on a wide screen, so the panes beside the content leave it room
+  const sideWidth = collapsed ? 0 : sidebar.width
   const collapse = useCallback((value: boolean) => {
     setCollapsed(value)
     try { localStorage.setItem(COLLAPSED, String(value)) } catch { /* storage disabled */ }
@@ -192,6 +196,9 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         onClose={() => setDrawerOpen(false)}
         collapsed={collapsed}
         onCollapse={() => collapse(true)}
+        width={sidebar.width}
+        onWidth={sidebar.setWidth}
+        onResetWidth={sidebar.reset}
         onToggleHidden={() => setIncludeHidden((value) => !value)}
         onSelect={select}
         onNew={startNew}
@@ -208,7 +215,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
       {settingsOpen && <SettingsDialog executors={executors} onClose={() => setSettingsOpen(false)} onChanged={settingsChanged}
         onDiscover={() => discover(true)} onDeletedAll={() => { select(null); refresh() }} />}
       {docsOpened && <div className={docs ? 'flex min-w-0 flex-1' : 'hidden'}>
-        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} onOpenMenu={openMenu} sidebarHidden={collapsed} onError={handle} /></Suspense>
+        <Suspense fallback={<p className="p-4 text-sm text-muted">Docsを読み込み中…</p>}><DocsView projects={projects} canEdit={!!config?.allow_file_edit} canCompile={!!config?.allow_compile} onOpenMenu={openMenu} sidebarHidden={collapsed} sideWidth={sideWidth} onError={handle} /></Suspense>
       </div>}
       <div className={docs ? 'hidden' : 'flex min-w-0 flex-1'}>
       <ChatView
@@ -221,7 +228,7 @@ export default function Workspace({ onSignedOut }: { onSignedOut: () => void }) 
         config={config}
         onProjectsChanged={loadProjects}
         onRefreshExecutors={() => loadExecutors(true)}
-        onOpenMenu={openMenu} sidebarHidden={collapsed}
+        onOpenMenu={openMenu} sidebarHidden={collapsed} sideWidth={sideWidth}
         onSelect={select}
         onChanged={refresh}
         onRunFinished={() => loadExecutors(false)}

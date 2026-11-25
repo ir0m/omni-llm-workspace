@@ -6,6 +6,7 @@ import {
 import { api, type Conversation, type Draft, type ProjectList } from '../api'
 import PasskeyDialog from './PasskeyDialog'
 import { useBackClose } from '../backClose'
+import { Resizer, SIDEBAR, widthVar } from '../resize'
 
 const COLLAPSED = 'omni.collapsedGroups'
 
@@ -90,6 +91,9 @@ type Props = {
   /** Wide screens: the sidebar is hidden, and onCollapse hides it */
   collapsed: boolean
   onCollapse: () => void
+  width: number
+  onWidth: (width: number) => void
+  onResetWidth: () => void
   onToggleHidden: () => void
   onSelect: (id: string | null) => void
   onNew: (draft: Draft) => void
@@ -213,7 +217,8 @@ export default function Sidebar(props: Props) {
     <>
       {open && <div className="fixed inset-0 z-20 bg-black/40 md:hidden" onClick={onClose} aria-hidden />}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-72 flex-col border-r border-border bg-surface transition-transform md:static md:translate-x-0 ${
+        style={widthVar('sidebar', props.width)}
+        className={`fixed inset-y-0 left-0 z-30 flex w-72 flex-col border-r border-border bg-surface transition-transform md:static md:w-[var(--sidebar-w)] md:shrink-0 md:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         } ${props.collapsed ? 'md:hidden' : ''}`}
       >
@@ -278,6 +283,8 @@ export default function Sidebar(props: Props) {
           </span>
         </div>
       </aside>
+      {!props.collapsed && <Resizer label="サイドバーの幅" edge="right" width={props.width} limits={SIDEBAR}
+        onChange={props.onWidth} onReset={props.onResetWidth} className="hidden md:block" />}
       {passkeys && <PasskeyDialog onClose={() => setPasskeys(false)} onSignedOut={props.onSignOut} />}
     </>
   )
