@@ -48,6 +48,11 @@ USAGE_SECONDS = 45
 ERRORS = {401: "auth", 403: "auth", 404: "not_found", 429: "rate_limit", 529: "overloaded", 500: "overloaded"}
 
 
+# One JSON message from the CLI can carry a whole PDF or image as base64: the attachments of a message
+# (up to 50 MiB, a third more as base64) or a PDF the Read tool loaded. The SDK's default of 1 MiB stops
+# such a turn with "JSON message exceeded maximum buffer size".
+MAX_MESSAGE_BYTES = 128 * 1024 * 1024
+
 def clip(text: str, limit: int = OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
@@ -218,7 +223,8 @@ class ClaudeCodeAgent:
         return env
 
     def options(self, **values: Any) -> sdk.ClaudeAgentOptions:
-        base: dict[str, Any] = {"setting_sources": [], "strict_mcp_config": True, "include_partial_messages": True}
+        base: dict[str, Any] = {"setting_sources": [], "strict_mcp_config": True, "include_partial_messages": True,
+                                "max_buffer_size": MAX_MESSAGE_BYTES}
         if self.cli_path:
             base["cli_path"] = self.cli_path
         return sdk.ClaudeAgentOptions(**{**base, **values})

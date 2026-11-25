@@ -324,3 +324,11 @@ def test_usage_refreshes_are_serialized_and_closed(tmp_path, monkeypatch):
 def test_malformed_reset_times_do_not_break_usage(text):
     from omniws.agents.claude import parse_reset
     assert parse_reset(text, 1_800_000_000) is None
+
+
+def test_messages_carrying_whole_pdfs_fit_the_sdk_buffer(tmp_path):
+    from omniws.attachments import MESSAGE_LIMIT
+    claude = agent(tmp_path, omni_allow_claude_subscription=True)
+    for options in (claude.turn_options(turn(tmp_path, mode="chat"), None), claude.turn_options(turn(tmp_path), None)):
+        # The largest message's attachments as base64, plus room for the JSON around them
+        assert options.max_buffer_size >= MESSAGE_LIMIT * 4 // 3 + 1024 * 1024
