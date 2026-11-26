@@ -8,7 +8,7 @@ import { useConversation } from '../useConversation'
 import { askToNotify } from '../notify'
 import ApprovalCard from './ApprovalCard'
 import ContextPanel from './ContextPanel'
-import { dictationUnavailable, useDictation } from '../dictation'
+import { dictationUnavailable, LANGUAGES, saveLanguage, savedLanguage, useDictation } from '../dictation'
 import ExecutorPicker, { firstTarget, startTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
 import PlanBar from './PlanBar'
@@ -114,7 +114,8 @@ export default function ChatView(props: Props) {
   const { detail, setDetail, live, reconnecting, revision: panelRevision, load, follow, isActive } = useConversation(conversationId, props)
   const [target, setTarget] = useState<Target | null>(null)
   const [input, setInput] = useState(() => readInput(conversationId))
-  const dictation = useDictation({ text: input, onText: setInput, onError: (message) => onError(new Error(message)) })
+  const [voiceLanguage, setVoiceLanguage] = useState(savedLanguage)
+  const dictation = useDictation({ text: input, language: voiceLanguage, onText: setInput, onError: (message) => onError(new Error(message)) })
   const [voiceBlocked] = useState(dictationUnavailable)
   useEffect(() => writeInput(conversationId, input), [conversationId, input])
   const [sending, setSending] = useState(false)
@@ -622,6 +623,11 @@ export default function ChatView(props: Props) {
             className={`rounded-xl p-2 disabled:opacity-40 ${dictation.listening ? 'animate-pulse bg-danger/10 text-danger' : 'text-muted hover:text-fg'}`}>
             {dictation.listening ? <MicOff className="size-5" aria-hidden /> : <Mic className="size-5" aria-hidden />}
           </button>
+          {!voiceBlocked && <select value={voiceLanguage} aria-label="音声入力の言語" title="音声入力の言語"
+            onChange={(event) => { setVoiceLanguage(event.target.value); saveLanguage(event.target.value); dictation.restart() }}
+            className={`mb-1.5 w-[4.5rem] shrink-0 rounded-lg border border-border bg-bg px-1 py-0.5 text-xs text-muted ${dictation.listening ? '' : 'hidden sm:block'}`}>
+            {LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+          </select>}
           <textarea
             aria-label="メッセージ"
             value={input}
