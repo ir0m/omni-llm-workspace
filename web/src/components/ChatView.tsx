@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, File as FileIcon, FolderOpen, Menu, Paperclip, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
+import { ArrowUp, File as FileIcon, FolderOpen, Menu, Mic, MicOff, Paperclip, RefreshCw, Square, Timer, Wrench, X } from 'lucide-react'
 import {
   api, attachmentsOf, attachmentUrl, textOf, type AppConfig, type AttachmentInfo, type ApprovalMode, type Draft, type Executor, type Mode,
   type McpServer, type PermissionAsk, type ProjectList, type Target,
@@ -8,6 +8,7 @@ import { useConversation } from '../useConversation'
 import { askToNotify } from '../notify'
 import ApprovalCard from './ApprovalCard'
 import ContextPanel from './ContextPanel'
+import { dictationUnavailable, useDictation } from '../dictation'
 import ExecutorPicker, { firstTarget, startTarget, usable } from './ExecutorPicker'
 import MessageView from './MessageView'
 import PlanBar from './PlanBar'
@@ -113,6 +114,8 @@ export default function ChatView(props: Props) {
   const { detail, setDetail, live, reconnecting, revision: panelRevision, load, follow, isActive } = useConversation(conversationId, props)
   const [target, setTarget] = useState<Target | null>(null)
   const [input, setInput] = useState(() => readInput(conversationId))
+  const dictation = useDictation({ text: input, onText: setInput, onError: (message) => onError(new Error(message)) })
+  const [voiceBlocked] = useState(dictationUnavailable)
   useEffect(() => writeInput(conversationId, input), [conversationId, input])
   const [sending, setSending] = useState(false)
   const [pending, setPending] = useState<Pending[]>(() => (pendingFiles.get(pendingKey(conversationId)) ?? []).map(fromInfo))
@@ -290,6 +293,7 @@ export default function ChatView(props: Props) {
     // Instructions added while an agent works are text only
     if (live) files = []
     if ((!text && !files.length) || !target || sendLock.current || sending || blocked || (live && !canInput)) return
+    dictation.cancel()  // what was dictated is in `text`; a late result must not put it back in the field
     sendLock.current = true
     setSending(true)
     if (mode === 'code') askToNotify()
@@ -612,10 +616,16 @@ export default function ChatView(props: Props) {
             title={live ? '応答中は添付できません' : 'ファイルを添付（ドラッグ＆ドロップ・画像の貼り付けもできます）'}>
             <Paperclip className="size-5" aria-hidden />
           </button>
+          <button onClick={dictation.toggle} disabled={!!voiceBlocked} aria-pressed={dictation.listening}
+            aria-label={dictation.listening ? '音声入力を止める' : '音声入力'}
+            title={voiceBlocked ?? (dictation.listening ? '音声入力を止める（話した内容は入力欄に残ります）' : '音声入力（ブラウザの音声認識を使います）')}
+            className={`rounded-xl p-2 disabled:opacity-40 ${dictation.listening ? 'animate-pulse bg-danger/10 text-danger' : 'text-muted hover:text-fg'}`}>
+            {dictation.listening ? <MicOff className="size-5" aria-hidden /> : <Mic className="size-5" aria-hidden />}
+          </button>
           <textarea
             aria-label="メッセージ"
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => { dictation.cancel(); setInput(event.target.value) }}
             onPaste={(event) => {
               if (live || !event.clipboardData.files.length) return
               event.preventDefault()  // a pasted screenshot becomes an attachment, not text
