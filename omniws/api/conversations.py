@@ -67,6 +67,7 @@ def conversation_dict(conversation: Conversation, runs: RunManager) -> dict[str,
             "project": conversation.project, "temporary": conversation.temporary, "pinned": conversation.pinned,
             "hidden": conversation.hidden, "forked_from": conversation.forked_from, "target": conversation.target,
             "approval_mode": conversation.approval_mode, "allow_rules": conversation.allow_rules or [],
+            "plan_mode": bool(conversation.plan_mode),
             "mcp_off": conversation.mcp_off or [],
             "created_at": conversation.created_at, "updated_at": conversation.updated_at,
             "active_run": active.id if active else None}
@@ -100,6 +101,7 @@ class NewConversation(BaseModel):
     mode: Literal["chat", "code"] = "chat"
     project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
+    plan_mode: bool = False
     mcp_off: list[Annotated[str, Field(max_length=20)]] = Field(default_factory=list, max_length=100)
 
 
@@ -112,6 +114,7 @@ class ConversationPatch(BaseModel):
     # A project name, or "" to take the conversation out of its project
     project: str | None = Field(default=None, max_length=200)
     approval_mode: Literal["ask", "auto_edit", "auto"] | None = None
+    plan_mode: bool | None = None
     clear_allow_rules: bool = False
     mcp_off: list[Annotated[str, Field(max_length=20)]] | None = Field(default=None, max_length=100)
 
@@ -150,7 +153,8 @@ def create_conversation(body: NewConversation, request: Request, session: Sessio
     project = check_project(request, body.project)
     approval = policy.clamp(body.approval_mode, request.app.state.settings) if body.approval_mode else None
     conversation = Conversation(id=str(uuid.uuid4()), title=body.title.strip(), temporary=body.temporary,
-                                mode=body.mode, project=project, approval_mode=approval, sort_key=float(now),
+                                mode=body.mode, project=project, approval_mode=approval, plan_mode=body.plan_mode,
+                                sort_key=float(now),
                                 mcp_off=list(dict.fromkeys(body.mcp_off)),
                                 created_at=now, updated_at=now)
     session.add(conversation)
@@ -424,6 +428,7 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
             session.flush()
             prepared: dict[str, Any] = {"user": message_dict(user), "reply": message_dict(reply), "seq": reply.seq,
                                         "temporary": conversation.temporary, "approval_mode": conversation.approval_mode,
+                                        "plan_mode": bool(conversation.plan_mode),
                                         "rules": list(conversation.allow_rules or [])}
             if agent is None:
                 format = replay_format(provider, state.settings)
@@ -596,6 +601,16 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
     def on_turn_id(turn_id: str) -> None:
         native_box["turn"] = turn_id
 
+    def on_plan(active: bool) -> None:
+        # The agent entered plan mode itself, or the user approved its plan: later turns continue in that mode
+        try:
+            with state.sessions.begin() as session:
+                conversation = session.get(Conversation, conversation_id)
+                if conversation is not None:
+                    conversation.plan_mode = active
+        except Exception:
+            log.exception("storing plan mode of %s failed", conversation_id)
+
     async def agent_stream(run: Run):
         if prepared["count"]:
             yield {"sessionUpdate": "handover", "agent": agent.label, "count": prepared["count"]}
@@ -604,7 +619,8 @@ async def _send_message(conversation_id: str, body: Send, request: Request, *, c
                     earlier=prepared["earlier"], native_session=native_box["id"], temporary=prepared["temporary"],
                     effort=body.effort, ask_permission=run.ask, on_session=on_session,
                     require_resume=prepared.get("require_resume", False), on_turn_id=on_turn_id,
-                    on_input_ready=run.set_steer, attachments=agent_files)
+                    on_input_ready=run.set_steer, attachments=agent_files,
+                    plan=mode == "code" and prepared.get("plan_mode", False), on_plan=on_plan)
         async for update in agent.run(turn):
             yield update
 

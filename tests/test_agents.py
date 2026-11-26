@@ -264,3 +264,26 @@ def test_temporary_code_turn_deletes_the_agent_session_in_the_project(code_clien
     assert len(deleted) == 2 and deleted[0] != deleted[1]  # a fresh session each turn, each one deleted
     second = client.get(f"/api/conversations/{conversation['id']}").json()["messages"][-1]
     assert any(block["type"] == "handover" and block["count"] == 2 for block in second["content"])
+
+
+def test_plan_mode_is_stored_passed_to_the_turn_and_follows_the_agent(code_client):
+    from omniws.events import message_chunk
+    client = code_client
+    agent = client.app.state.agents["opencode"]
+    seen = []
+
+    async def run(turn):
+        seen.append(turn.plan)
+        if turn.on_plan:
+            turn.on_plan(not turn.plan)  # entered plan mode itself / the plan was approved
+        yield message_chunk("ok")
+    agent.run = run
+    conversation = client.post("/api/conversations", json={"mode": "code", "project": "app", "plan_mode": True}).json()
+    assert conversation["plan_mode"] is True
+    body = {"text": "計画して", "provider": FREE, "model": "opencode/alpha-free"}
+    for expected_after in (False, True):
+        started = client.post(f"/api/conversations/{conversation['id']}/messages", json=body).json()
+        follow(client, started["run_id"])
+        assert client.get(f"/api/conversations/{conversation['id']}").json()["plan_mode"] is expected_after
+    assert seen == [True, False]
+    assert client.patch(f"/api/conversations/{conversation['id']}", json={"plan_mode": False}).json()["plan_mode"] is False

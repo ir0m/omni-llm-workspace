@@ -28,6 +28,7 @@ class PermissionRequest:
     diff: str | None = None
     outside_project: bool = False
     tool: str | None = None  # an MCP tool: "<server id>/<tool name>"
+    plan: str | None = None  # kind "plan": the plan (Markdown) the agent asks to carry out
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +67,9 @@ class Turn:
     # Chat only: images (and PDFs for Claude Code) for the agent's own input, {"kind", "media_type", "name", "path"}.
     # Text files are already in `text`; in Code every attachment is a file in the project, listed in `text`.
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    # Code with Claude Code: start in plan mode, and report when the agent enters or leaves it
+    plan: bool = False
+    on_plan: Callable[[bool], None] | None = None
 
 
 class Agent(Protocol):

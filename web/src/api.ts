@@ -50,6 +50,8 @@ export type PermissionAsk = {
   paths: string[]
   diff: string | null
   outside_project: boolean
+  /** kind "plan": the plan (Markdown) the agent asks to carry out */
+  plan?: string | null
 }
 
 export type AppConfig = {
@@ -102,6 +104,8 @@ export type Conversation = {
   forked_from: string | null
   target: Target | null
   approval_mode: ApprovalMode | null
+  /** Claude Code in Code: explore and propose; edits wait for the approved plan */
+  plan_mode?: boolean
   allow_rules: { kind: string; prefix?: string; outside?: boolean; tool?: string }[]
   /** MCP servers this conversation doesn't use */
   mcp_off?: string[]
@@ -289,7 +293,7 @@ export type McpServerInput = {
   always_allow?: string[]
 }
 
-export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null; mcp_off?: string[] }
+export type Draft = { temporary: boolean; mode: Mode; project: string | null; approval_mode?: ApprovalMode | null; plan_mode?: boolean; mcp_off?: string[] }
 
 const DETAIL_TEXT: Record<string, string> = {
   conversation_not_found: 'この会話は見つかりません（削除された可能性があります）',
@@ -411,7 +415,7 @@ export const api = {
   discoverSessions: () => request<{ added: number; errors: string[] }>('POST', '/api/sessions/discover'),
   conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
   create: (draft: Draft) => request<Conversation>('POST', '/api/conversations', draft),
-  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode' | 'mcp_off'>> & { project?: string; clear_allow_rules?: boolean }) =>
+  update: (id: string, patch: Partial<Pick<Conversation, 'title' | 'pinned' | 'hidden' | 'temporary' | 'mode' | 'approval_mode' | 'plan_mode' | 'mcp_off'>> & { project?: string; clear_allow_rules?: boolean }) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   remove: (id: string, native = false) => request<{ ok: boolean }>('DELETE', `/api/conversations/${id}?native=${native}`),
   fork: (id: string, messageId?: string) =>

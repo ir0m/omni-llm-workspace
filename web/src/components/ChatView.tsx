@@ -163,6 +163,7 @@ export default function ChatView(props: Props) {
   const project = detail ? detail.project : props.draft.project
   const temporary = detail ? detail.temporary : props.draft.temporary
   const approval: ApprovalMode = (detail ? detail.approval_mode : props.draft.approval_mode) ?? config?.approval_default ?? 'auto_edit'
+  const planning = !!(detail ? detail.plan_mode : props.draft.plan_mode)
 
   // Persist the recovered text before acknowledging it, including when the screen was closed at completion.
   useEffect(() => {
@@ -230,7 +231,7 @@ export default function ChatView(props: Props) {
     try { localStorage.setItem(`${LAST_TARGET}.${mode}`, JSON.stringify(next)) } catch { /* storage disabled or full */ }
   }
 
-  async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; clear_allow_rules?: boolean; mcp_off?: string[] }) {
+  async function change(patch: { mode?: Mode; project?: string; approval_mode?: ApprovalMode; plan_mode?: boolean; clear_allow_rules?: boolean; mcp_off?: string[] }) {
     if (!detail) {
       const { clear_allow_rules: _clear, ...rest } = patch
       props.onDraftChange({ ...props.draft, ...rest })
@@ -435,6 +436,14 @@ export default function ChatView(props: Props) {
           ))}
           {rules.length > 0 && <option value="__clear">「常に許可」の記憶を消す（{rules.length}件）</option>}
         </select>
+      )}
+      {mode === 'code' && target?.provider.startsWith('claude_code') && (
+        <button onClick={() => change({ plan_mode: !planning })} aria-pressed={planning}
+          title={planning ? '計画モード: 調べて計画を提示し、承認するまで編集しません。押すと通常に戻します'
+            : '計画モードにする: 先に調べて計画を提示し、承認してから編集します（Claude Code）'}
+          className={`shrink-0 rounded-lg border px-2 py-1.5 text-sm ${planning ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-fg'}`}>
+          計画モード{planning ? ': オン' : ''}
+        </button>
       )}
     </fieldset>
   )

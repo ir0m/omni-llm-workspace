@@ -35,6 +35,8 @@ class Conversation(Base):
     target: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     # Code mode: ask | auto_edit | auto (None: OMNI_APPROVAL_DEFAULT), and what "always allow" remembered
     approval_mode: Mapped[str | None] = mapped_column(String(12), default=None)
+    # Claude Code in Code: explore and propose a plan; edits wait until the plan is approved
+    plan_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     allow_rules: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
     created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
     updated_at: Mapped[int] = mapped_column(Integer, default=now_ms)

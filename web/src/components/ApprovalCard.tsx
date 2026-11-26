@@ -2,17 +2,19 @@ import { useRef, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import type { PermissionAsk } from '../api'
 import { DiffView } from './ToolCard'
+import { Markdown } from './MessageView'
 
 const ACTION: Record<string, string> = {
   execute: 'コマンドを実行します', edit: 'ファイルを編集します', delete: 'ファイルを削除します', move: 'ファイルを移動します',
   read: 'ファイルを読みます', search: '検索します', fetch: 'Webから取得します', other: '操作をします',
-  mcp: 'MCP ツールを使います',
+  mcp: 'MCP ツールを使います', plan: '計画を提示しました',
 }
 
 // Same rule as the server: chained, piped or redirected commands are never remembered
 const SHELL_CONTROL = /[;&|`<>\n]|\$\(/
 
 function alwaysLabel(ask: PermissionAsk): string | null {
+  if (ask.kind === 'plan') return null  // every plan is for the user to read
   if (ask.kind === 'execute') {
     if (!ask.command || SHELL_CONTROL.test(ask.command)) return null
     return `「${ask.command.trim().split(/\s+/).slice(0, 2).join(' ')}」で始まるコマンドを常に許可`
@@ -55,6 +57,9 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
       </div>
       {/* Long commands and diffs scroll here, so the answer buttons always stay on screen */}
       <div className="min-h-0 shrink overflow-y-auto overscroll-contain">
+        {ask.kind === 'plan' && <div className="mt-2 rounded-lg bg-surface px-3 py-2 text-sm">
+          {ask.plan ? <Markdown text={ask.plan} /> : <p className="text-muted">（計画の本文はありません）</p>}
+        </div>}
         {ask.command && (
           <>
             {ask.kind === 'mcp' && <p className="mt-2 break-all font-mono text-sm font-medium">{ask.title}</p>}
@@ -71,7 +76,8 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
           </div>
         )}
         <p className={`mt-2 text-xs ${ask.outside_project ? 'text-danger' : 'text-muted'}`}>
-          {ask.kind === 'mcp' ? '入力の内容がこのツールに送られます'
+          {ask.kind === 'plan' ? '承認すると計画モードを終えて実装に移ります。編集やコマンドは、これまでどおり承認の設定に従います'
+            : ask.kind === 'mcp' ? '入力の内容がこのツールに送られます'
             : ask.outside_project ? '⚠ プロジェクトの外を対象にしています' : `場所: ${project ?? '—'}`}
         </p>
       </div>
@@ -83,25 +89,25 @@ export default function ApprovalCard({ ask, agent, project, onAnswer }: {
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={2}
-            placeholder="理由やかわりにしてほしいこと（任意）"
+            placeholder={ask.kind === 'plan' ? '計画をどう直してほしいか（任意）' : '理由やかわりにしてほしいこと（任意）'}
             className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
           />
           <div className="mt-2 flex flex-wrap justify-end gap-2 text-sm">
             <button onClick={() => setDenying(false)} className="rounded-lg px-3 py-1.5 text-muted">戻る</button>
             <button onClick={() => answer('deny', reason.trim() || undefined)} className="rounded-lg bg-danger px-3 py-1.5 font-medium text-white">
-              {reason.trim() ? '拒否して理由を送る' : '拒否'}
+              {ask.kind === 'plan' ? (reason.trim() ? '修正を依頼する' : '承認しない') : reason.trim() ? '拒否して理由を送る' : '拒否'}
             </button>
           </div>
         </fieldset>
       ) : (
         <fieldset disabled={busy} className="mt-3 flex shrink-0 flex-wrap gap-2 text-sm disabled:opacity-60">
-          <button onClick={() => answer('allow')} className="rounded-lg bg-accent px-4 py-1.5 font-medium text-accent-fg">{busy ? '送信中…' : '許可'}</button>
-          {always ? (
+          <button onClick={() => answer('allow')} className="rounded-lg bg-accent px-4 py-1.5 font-medium text-accent-fg">{busy ? '送信中…' : ask.kind === 'plan' ? '承認して実装する' : '許可'}</button>
+          {ask.kind === 'plan' ? null : always ? (
             <button onClick={() => answer('allow_always')} className="rounded-lg border border-border px-3 py-1.5">{always}</button>
           ) : (
             <span className="self-center text-xs text-muted">つないだコマンドは毎回確認します</span>
           )}
-          <button onClick={() => setDenying(true)} className="rounded-lg border border-border px-3 py-1.5 text-danger">拒否…</button>
+          <button onClick={() => setDenying(true)} className="rounded-lg border border-border px-3 py-1.5 text-danger">{ask.kind === 'plan' ? '修正を依頼…' : '拒否…'}</button>
         </fieldset>
       )}
     </div>

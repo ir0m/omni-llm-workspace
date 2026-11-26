@@ -131,6 +131,9 @@ def decide(request: PermissionRequest, mode: str | None, rules: list[dict[str, A
     reason = denied_by_env(request, settings)
     if reason:
         return "deny", reason
+    # A plan is for the user to approve: no approval mode or remembered rule approves it
+    if request.kind == "plan":
+        return "ask", None
     # Always confirmed: neither "always allow" nor the approval mode lets these through
     if request.outside_project and outside_limit(request, settings)[1] == "ask":
         return "ask", None
