@@ -193,7 +193,7 @@ def test_usage_limit_is_not_success_even_if_cli_result_says_success(tmp_path, mo
             pass
         async def query(self, prompt):
             pass
-        async def receive_response(self):
+        async def receive_messages(self):
             yield sdk.AssistantMessage(content=[], model='haiku', error='rate_limit')
             yield sdk.ResultMessage(subtype='success', duration_ms=1, duration_api_ms=1, is_error=False,
                                     num_turns=1, session_id='test-limit', result='Usage limit')
@@ -332,3 +332,154 @@ def test_messages_carrying_whole_pdfs_fit_the_sdk_buffer(tmp_path):
     for options in (claude.turn_options(turn(tmp_path, mode="chat"), None), claude.turn_options(turn(tmp_path), None)):
         # The largest message's attachments as base64, plus room for the JSON around them
         assert options.max_buffer_size >= MESSAGE_LIMIT * 4 // 3 + 1024 * 1024
+
+
+
+# --- Background agents and the CLI's own result frames ------------------------------------------------------
+
+def scripted(monkeypatch, messages, hang=False):
+    """A ClaudeSDKClient that streams `messages` (then stays open when `hang`), like the CLI's stdout."""
+    class Client:
+        def __init__(self, **kwargs):
+            self.closed = False
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            self.closed = True
+        async def query(self, prompt):
+            pass
+        async def get_context_usage(self):
+            return {}
+        async def receive_messages(self):
+            for message in messages:
+                for item in (message if isinstance(message, Said) else [message]):
+                    yield item
+            if hang:
+                await asyncio.sleep(3600)
+    monkeypatch.setattr(sdk, 'ClaudeSDKClient', Client)
+
+
+class Said(list):
+    """The streamed text delta and the complete message, both of which the CLI sends for a reply."""
+
+
+def text(value):
+    delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": value}}
+    return Said([sdk.StreamEvent(uuid='e', session_id='s', event=delta),
+                 sdk.AssistantMessage(content=[sdk.TextBlock(text=value)], model='haiku')])
+
+
+def result(turns=1, value='', tokens=0):
+    return sdk.ResultMessage(subtype='success', duration_ms=1, duration_api_ms=1, is_error=False, num_turns=turns,
+                             session_id='s', result=value, usage={'input_tokens': tokens, 'output_tokens': tokens})
+
+
+def started(task_id, kind='local_agent', description='調査'):
+    return sdk.TaskStartedMessage(subtype='task_started', data={}, task_id=task_id, description=description, uuid='u',
+                                  session_id='s', task_type=kind)
+
+
+def ended(task_id, status='completed', summary='結果'):
+    return sdk.TaskNotificationMessage(subtype='task_notification', data={}, task_id=task_id, status=status,
+                                       output_file='', summary=summary, uuid='u', session_id='s')
+
+
+def run_turn(tmp_path):
+    async def collect():
+        return [update async for update in agent(tmp_path).run(turn(tmp_path))]
+    return asyncio.run(collect())
+
+
+def said(updates):
+    return "".join(u["content"]["text"] for u in updates if u["sessionUpdate"] == "agent_message_chunk")
+
+
+def test_resumed_session_answers_after_the_report_of_stopped_background_work(tmp_path, monkeypatch):
+    # The CLI reports agents the previous process left behind and closes that report with an empty result.
+    # Stopping there left the user's message unanswered (an empty reply).
+    scripted(monkeypatch, [ended('old', 'stopped'), sdk.SystemMessage(subtype='init', data={}), result(0),
+                           sdk.SystemMessage(subtype='init', data={}), text('計画書はできています'), result(1, tokens=5)])
+    updates = run_turn(tmp_path)
+    assert said(updates) == '計画書はできています'
+    assert updates[-1]["inputTokens"] == 5
+
+
+def test_turn_waits_for_background_agents_and_their_follow_up(tmp_path, monkeypatch):
+    scripted(monkeypatch, [started('a1', description='実装を調べる'), text('結果を待っています。'), result(1, tokens=2),
+                           ended('a1', summary='見つかった'), text('まとめ'), result(1, tokens=3),
+                           text('閉じた後の出力')], hang=True)
+    updates = run_turn(tmp_path)
+    assert said(updates) == '結果を待っています。\n\nまとめ'
+    cards = [u for u in updates if u.get("toolCallId") == "task-a1"]
+    assert cards[0]["title"] == "バックグラウンド: 実装を調べる" and cards[0]["status"] == "in_progress"
+    assert cards[-1]["status"] == "completed" and cards[-1]["output"] == "見つかった"
+    assert updates[-1]["inputTokens"] == 5  # both results
+
+
+def test_background_shells_are_not_waited_for(tmp_path, monkeypatch):
+    scripted(monkeypatch, [started('b1', kind='local_bash', description='npm run dev'), text('起動しました'), result(1),
+                           text('来ないはずの出力')], hang=True)
+    updates = run_turn(tmp_path)
+    assert said(updates) == '起動しました'
+    assert not [u for u in updates if u.get("toolCallId") == "task-b1"]
+
+
+def test_waiting_for_background_agents_is_bounded(tmp_path, monkeypatch):
+    from omniws.agents import claude as claude_module
+    monkeypatch.setattr(claude_module, 'BACKGROUND_WAIT', 0.2)
+    scripted(monkeypatch, [started('a1'), text('待っています'), result(1)], hang=True)
+    updates = run_turn(tmp_path)
+    assert '待つのをやめました' in said(updates)
+
+
+# --- Plan mode ------------------------------------------------------------------------------------------------
+
+def test_plan_mode_carries_over_and_the_plan_is_always_for_the_user(tmp_path):
+    from omniws.agents.base import PermissionRequest
+    from omniws.agents.policy import decide
+    from .conftest import make_settings
+    claude = agent(tmp_path, omni_allow_claude_subscription=True)
+    planning = turn(tmp_path)
+    planning.plan = True
+    assert claude.turn_options(planning, "ses-1").permission_mode == "plan"
+    assert claude.turn_options(turn(tmp_path), "ses-1").permission_mode == "default"
+    # Neither "auto" nor a remembered rule approves a plan
+    plan = PermissionRequest(tool_call_id="t", kind="plan", title="計画", plan="1. 直す")
+    settings = make_settings(tmp_path)
+    assert decide(plan, "auto", [{"kind": "plan"}], settings)[0] == "ask"
+
+
+def test_exit_plan_mode_asks_with_the_plan_and_entering_needs_no_approval(tmp_path):
+    asked = []
+    async def answer(request):
+        asked.append(request)
+        return Decision("deny", message="テストも追加して") if len(asked) == 1 else Decision("allow")
+    claude = agent(tmp_path, omni_allow_claude_subscription=True)
+    can_use_tool = claude.permission_handler(turn(tmp_path, ask=answer))
+    context = SimpleNamespace(tool_use_id="tool-1")
+    async def check():
+        entered = await can_use_tool("EnterPlanMode", {}, context)
+        first = await can_use_tool("ExitPlanMode", {"plan": "## 計画\n1. 直す"}, context)
+        second = await can_use_tool("ExitPlanMode", {"plan": "## 計画\n1. 直す\n2. テスト"}, context)
+        return entered, first, second
+    entered, first, second = asyncio.run(check())
+    assert isinstance(entered, sdk.PermissionResultAllow) and len(asked) == 2
+    assert asked[0].kind == "plan" and asked[0].plan == "## 計画\n1. 直す"
+    assert isinstance(first, sdk.PermissionResultDeny) and "The user asked for these changes: テストも追加して" in first.message
+    assert isinstance(second, sdk.PermissionResultAllow)
+
+
+def test_entering_and_approved_leaving_of_plan_mode_are_reported(tmp_path, monkeypatch):
+    def use(tool_id, name):
+        return sdk.AssistantMessage(content=[sdk.ToolUseBlock(id=tool_id, name=name, input={})], model='haiku')
+    def done(tool_id, error=False):
+        return sdk.UserMessage(content=[sdk.ToolResultBlock(tool_use_id=tool_id, content='ok', is_error=error)])
+    scripted(monkeypatch, [use('e1', 'EnterPlanMode'), done('e1'), use('x1', 'ExitPlanMode'), done('x1', error=True),
+                           use('x2', 'ExitPlanMode'), done('x2'), text('実装します'), result(1)])
+    reported = []
+    planning = turn(tmp_path)
+    planning.on_plan = reported.append
+    async def collect():
+        return [update async for update in agent(tmp_path).run(planning)]
+    asyncio.run(collect())
+    assert reported == [True, False]  # the rejected plan (an error result) changed nothing

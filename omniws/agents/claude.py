@@ -53,6 +53,13 @@ ERRORS = {401: "auth", 403: "auth", 404: "not_found", 429: "rate_limit", 529: "o
 # such a turn with "JSON message exceeded maximum buffer size".
 MAX_MESSAGE_BYTES = 128 * 1024 * 1024
 
+# Background work the turn waits for. A turn's process ends with the turn, and ending it kills what still runs:
+# background agents (the model said it would wait for their results) are waited for, as the SDK itself does;
+# background shells (dev servers, watchers) may never end, so they are not.
+WAITED_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+BACKGROUND_WAIT = 30 * 60  # seconds, after the model's reply, before giving up on them
+TASK_DONE = {"completed": "completed", "failed": "failed", "stopped": "failed", "killed": "failed"}
+
 def clip(text: str, limit: int = OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
@@ -97,6 +104,10 @@ def tool_fields(name: str, data: dict[str, Any], cwd: Path) -> dict[str, Any]:
         fields["diff"] = unified(path or "file", old, str(data.get("content", "")))
     elif name in ("WebFetch", "WebSearch"):
         fields["title"] = f"{name}: {data.get('url') or data.get('query') or ''}"
+    elif name == "EnterPlanMode":
+        fields["title"] = "計画モードに切り替え"
+    elif name == "ExitPlanMode":
+        fields["title"] = "計画を提示"
     elif name in ("Task", "Agent"):
         fields["title"] = f"サブエージェント: {data.get('description', '')}"
     if "diff" in fields:
@@ -353,7 +364,21 @@ class ClaudeCodeAgent:
 
     def permission_handler(self, turn: Turn):
         async def can_use_tool(name: str, data: dict[str, Any], context: Any):
-            if name == "TodoWrite":
+            if name in ("TodoWrite", "EnterPlanMode"):  # entering plan mode only narrows what the agent may do
+                return sdk.PermissionResultAllow()
+            if name == "ExitPlanMode":
+                # The plan itself, for the user to approve (always asked, whatever the approval mode)
+                request = PermissionRequest(tool_call_id=getattr(context, "tool_use_id", None) or "", kind="plan",
+                                            title="計画", plan=str(data.get("plan") or "")[:100_000] or None)
+                try:
+                    decision = await turn.ask_permission(request)
+                except asyncio.CancelledError:
+                    return sdk.PermissionResultDeny(message="The user stopped this turn.", interrupt=True)
+                if decision.outcome == "deny":
+                    # Said plainly, so the agent takes the user's words as theirs and not as text from a tool
+                    request_text = f" The user asked for these changes: {decision.message}" if decision.message else ""
+                    return sdk.PermissionResultDeny(message="The user reviewed the plan and did not approve it yet."
+                                                    + request_text + " Revise the plan and present it again with ExitPlanMode.")
                 return sdk.PermissionResultAllow()
             fields = tool_fields(name, data, turn.cwd)
             paths = [path for path in [data.get("file_path"), data.get("notebook_path"), data.get("path")] if path]
@@ -388,7 +413,10 @@ class ClaudeCodeAgent:
             prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
             if (instructions := claude_md(turn.cwd)):
                 prompt["append"] = instructions
-            values.update(system_prompt=prompt, can_use_tool=self.permission_handler(turn), permission_mode="default",
+            # Plan mode carries over between turns: resuming in "default" would tell the agent it may now edit,
+            # although nobody approved its plan
+            values.update(system_prompt=prompt, can_use_tool=self.permission_handler(turn),
+                          permission_mode="plan" if turn.plan else "default",
                           disallowed_tools=self.secret_reads())
         return self.options(**values)
 
@@ -436,21 +464,64 @@ class ClaudeCodeAgent:
             async with sdk.ClaudeSDKClient(options=self.turn_options(turn, resume)) as client:
                 await client.query(user_message(prompt, turn.attachments) if turn.attachments else prompt)
                 result = None
+                results: list[Any] = []
                 failure = None
-                async for message in client.receive_response():
+                background: dict[str, str] = {}  # running background agents: task id -> description
+                plan_tools: dict[str, str] = {}  # EnterPlanMode / ExitPlanMode calls waiting for their result
+                notified = False  # a background task reported its end since the last result
+                answered = False  # the model wrote something since the last result
+                deadline: float | None = None
+                follow_up = False  # the next text starts a follow-up turn: a new paragraph
+                loop = asyncio.get_running_loop()
+                messages = client.receive_messages().__aiter__()
+                while True:
+                    try:
+                        if deadline is None:
+                            message = await messages.__anext__()
+                        else:
+                            message = await asyncio.wait_for(messages.__anext__(), max(0.1, deadline - loop.time()))
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError:
+                        yield message_chunk("\n\n（バックグラウンドのエージェントが30分以内に終わらなかったため、待つのをやめました）")
+                        break
                     started = True
                     if isinstance(message, sdk.AssistantMessage) and message.error == "rate_limit":
                         # Some CLI versions end a usage-limit reply with a success ResultMessage.
                         # It must still return queued instructions instead of starting another request.
                         failure = ProviderError("rate_limit", "Claude の利用上限に達しました")
-                    if isinstance(message, sdk.AssistantMessage) and not message.parent_tool_use_id \
-                            and message.uuid and turn.on_turn_id:
-                        turn.on_turn_id(message.uuid)
+                    if isinstance(message, sdk.AssistantMessage) and not message.parent_tool_use_id:
+                        answered = True
+                        if message.uuid and turn.on_turn_id:
+                            turn.on_turn_id(message.uuid)
                     for update in self.updates(message, turn):
+                        if follow_up and update.get("sessionUpdate") == "agent_message_chunk":
+                            follow_up = False
+                            yield message_chunk("\n\n")
                         yield update
-                    if isinstance(message, sdk.ResultMessage):
-                        result = message
-                usage = self.usage_from(result)
+                    for update in self.task_updates(message, background):
+                        yield update
+                    self.plan_changes(message, plan_tools, turn)
+                    if isinstance(message, (sdk.TaskNotificationMessage, sdk.TaskUpdatedMessage)) \
+                            and getattr(message, "status", None) in TASK_DONE:
+                        notified = True
+                    if not isinstance(message, sdk.ResultMessage):
+                        continue
+                    if not results and not message.is_error and message.num_turns == 0 and notified and not answered:
+                        # On resume, the CLI first reports background work the previous process left unfinished
+                        # and closes that report with an empty result of its own. The answer comes after it.
+                        notified = False
+                        continue
+                    result = message
+                    results.append(message)
+                    notified = answered = False
+                    if message.is_error or failure or not background:
+                        break
+                    # The model is waiting for background agents: their results start a follow-up turn
+                    follow_up = True
+                    if deadline is None:
+                        deadline = loop.time() + BACKGROUND_WAIT
+                usage = self.usage_from(result, results)
                 with contextlib.suppress(Exception):
                     context = await client.get_context_usage()
                     usage.update(self.context_from(context))
@@ -506,14 +577,51 @@ class ClaudeCodeAgent:
                     out.append(update)
         return out
 
-    def usage_from(self, result: Any) -> Update:
-        usage = (getattr(result, "usage", None) or {}) if result else {}
-        update = usage_update(input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
-                              cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
-                              cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
-                              cost_usd=result.total_cost_usd if result and self.billing == "api" else None,
+    def usage_from(self, result: Any, results: list[Any] | None = None) -> Update:
+        """The turn's usage. A turn that waited for background agents has a result for each follow-up."""
+        parts = results or ([result] if result else [])
+        total = lambda key: sum(int(((getattr(item, "usage", None) or {}).get(key)) or 0) for item in parts)
+        costs = [item.total_cost_usd for item in parts if getattr(item, "total_cost_usd", None) is not None]
+        update = usage_update(input_tokens=total("input_tokens"), output_tokens=total("output_tokens"),
+                              cache_read_tokens=total("cache_read_input_tokens"),
+                              cache_write_tokens=total("cache_creation_input_tokens"),
+                              cost_usd=sum(costs) if costs and self.billing == "api" else None,
                               stop_reason=getattr(result, "stop_reason", None) if result else None)
         return update
+
+    @staticmethod
+    def plan_changes(message: Any, calls: dict[str, str], turn: Turn) -> None:
+        """Report entering plan mode, or leaving it once the plan was approved, when the tool call succeeds."""
+        if turn.on_plan is None or getattr(message, "parent_tool_use_id", None):
+            return
+        if isinstance(message, sdk.AssistantMessage):
+            for block in message.content:
+                if isinstance(block, sdk.ToolUseBlock) and block.name in ("EnterPlanMode", "ExitPlanMode"):
+                    calls[block.id] = block.name
+        elif isinstance(message, sdk.UserMessage) and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, sdk.ToolResultBlock) and block.tool_use_id in calls:
+                    name = calls.pop(block.tool_use_id)
+                    if not block.is_error:
+                        turn.on_plan(name == "EnterPlanMode")
+
+    @staticmethod
+    def task_updates(message: Any, background: dict[str, str]) -> list[Update]:
+        """Background agents as cards: running while the turn waits for them, then done or failed."""
+        if isinstance(message, sdk.TaskStartedMessage) and message.task_type in WAITED_TASK_TYPES:
+            background[message.task_id] = message.description or "エージェント"
+            return [{"sessionUpdate": "tool_call", "toolCallId": f"task-{message.task_id}", "kind": "other",
+                     "status": "in_progress", "title": f"バックグラウンド: {background[message.task_id]}"}]
+        if isinstance(message, (sdk.TaskNotificationMessage, sdk.TaskUpdatedMessage)):
+            status = TASK_DONE.get(getattr(message, "status", None) or "")
+            if status and message.task_id in background:
+                background.pop(message.task_id)
+                update: Update = {"sessionUpdate": "tool_call_update", "toolCallId": f"task-{message.task_id}", "status": status}
+                summary = getattr(message, "summary", None)
+                if summary:
+                    update["output"] = clip(summary)
+                return [update]
+        return []
 
     @staticmethod
     def context_from(context: Any) -> dict[str, Any]:
